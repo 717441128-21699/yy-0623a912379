@@ -108,6 +108,19 @@ interface TaskStore {
     recheckerName?: string
   ) => void;
 
+  batchSetRectification: (
+    pointIds: string[],
+    status: RectificationStatus,
+    remark?: string,
+    recheckerName?: string
+  ) => void;
+
+  batchAssignTeam: (
+    teamId: string,
+    deadline: number,
+    remark?: string
+  ) => void;
+
   completeTask: () => void;
   assignTeam: (teamId: string, deadline: number, remark?: string) => void;
 
@@ -427,6 +440,52 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       recheckPhotos: [],
       recheckedAt: undefined,
       rectificationHistory: [...point.rectificationHistory, historyRecord],
+    });
+  },
+
+  batchSetRectification: (pointIds, status, remark, recheckerName) => {
+    set((state) => {
+      const task = state.tasks.find((t) => t.id === state.currentTaskId);
+      if (!task) return state;
+
+      const newPoints = task.points.map((p) => {
+        if (!pointIds.includes(p.id)) return p;
+        return {
+          ...p,
+          rectificationStatus: status,
+          rectificationRemark: remark ?? p.rectificationRemark,
+          rectifiedAt:
+            status !== "pending" && status !== "none"
+              ? Date.now()
+              : p.rectifiedAt,
+          recheckerName: recheckerName ?? p.recheckerName,
+        };
+      });
+      const newTask = updateTaskStats({ ...task, points: newPoints });
+      const nextTasks = state.tasks.map((t) =>
+        t.id === task.id ? newTask : t
+      );
+      saveTasksToStorage(nextTasks);
+      return { tasks: nextTasks };
+    });
+  },
+
+  batchAssignTeam: (teamId, deadline, remark) => {
+    set((state) => {
+      const task = state.tasks.find((t) => t.id === state.currentTaskId);
+      if (!task) return state;
+
+      const withAssignment = {
+        ...task,
+        teamId,
+        deadline,
+        remark,
+      };
+      const nextTasks = state.tasks.map((t) =>
+        t.id === task.id ? withAssignment : t
+      );
+      saveTasksToStorage(nextTasks);
+      return { tasks: nextTasks };
     });
   },
 

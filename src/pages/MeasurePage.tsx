@@ -88,18 +88,24 @@ export default function MeasurePage() {
   useEffect(() => {
     if (!task || !initialized) return;
     if (currentPoint) {
-      if (currentPoint.draftValue !== undefined && currentPoint.draftValue !== "") {
-        setInputValue(currentPoint.draftValue);
+      const hasConfirmedValue =
+        currentPoint.status === "measured" ||
+        currentPoint.status === "recheck_done";
+      const hasDraft =
+        (currentPoint.draftValue !== undefined && currentPoint.draftValue !== "") ||
+        currentPoint.draftPhotos.length > 0;
+
+      if (hasDraft && !hasConfirmedValue) {
+        setInputValue(currentPoint.draftValue ?? "");
+        setTempPhotos(currentPoint.draftPhotos);
       } else if (currentPoint.status === "recheck_pending") {
         setInputValue("");
+        setTempPhotos([]);
       } else if (currentPoint.measuredValue !== undefined) {
         setInputValue(String(currentPoint.measuredValue));
+        setTempPhotos([]);
       } else {
         setInputValue("");
-      }
-      if (currentPoint.draftPhotos.length > 0) {
-        setTempPhotos(currentPoint.draftPhotos);
-      } else {
         setTempPhotos([]);
       }
     }
@@ -161,6 +167,10 @@ export default function MeasurePage() {
 
   useEffect(() => {
     if (!currentPoint || !initialized) return;
+    const isConfirmed =
+      currentPoint.status === "measured" || currentPoint.status === "recheck_done";
+    if (isConfirmed) return;
+
     const draftVal = inputValue !== "" ? inputValue : undefined;
     const hasDraftContent = draftVal !== undefined || tempPhotos.length > 0;
     const existingDraft =
@@ -333,10 +343,11 @@ export default function MeasurePage() {
   const isRecheckPending = currentPoint.status === "recheck_pending";
 
   const getPointColor = (p: (typeof filteredPoints)[number]) => {
+    const isConfirmed = p.status === "measured" || p.status === "recheck_done";
     const hasDraft =
       (p.draftValue !== undefined && p.draftValue !== "") ||
       p.draftPhotos.length > 0;
-    if (hasDraft && p.status !== "recheck_pending" && p.result === undefined)
+    if (hasDraft && !isConfirmed && p.result === undefined)
       return "bg-yellow-100 text-yellow-700 ring-2 ring-yellow-400";
     if (p.status === "recheck_pending") return "bg-accent-orange text-white";
     if (p.result === "out") return "bg-status-outBg text-status-out";
@@ -603,6 +614,7 @@ export default function MeasurePage() {
                   <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-white border border-accent-orange" />
                 )}
                 {((p.draftValue !== undefined && p.draftValue !== "") || p.draftPhotos.length > 0) &&
+                  p.status !== "measured" && p.status !== "recheck_done" &&
                   p.status !== "recheck_pending" &&
                   p.result === undefined &&
                   idx !== currentIndex && (
