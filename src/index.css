@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Segoe UI", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #F3F4F6;
+  color: #111827;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-primary-800 text-white font-medium rounded-xl py-3 px-4 active:bg-primary-900 transition-colors;
+  }
+  .btn-secondary {
+    @apply bg-white border border-gray-300 text-gray-700 font-medium rounded-xl py-3 px-4 active:bg-gray-50 transition-colors;
+  }
+  .btn-danger {
+    @apply bg-status-out text-white font-medium rounded-xl py-3 px-4 active:bg-red-700 transition-colors;
+  }
+  .btn-orange {
+    @apply bg-accent-orange text-white font-medium rounded-xl py-3 px-4 active:bg-orange-600 transition-colors;
+  }
+  .card {
+    @apply bg-white rounded-2xl shadow-sm border border-gray-100;
+  }
+}
