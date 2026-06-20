@@ -109,6 +109,74 @@ export default function ResultPage() {
   });
   const [batchAssignRemark, setBatchAssignRemark] = useState("");
   const problemListRef = useRef<HTMLDivElement>(null);
+  const [dashboardFilterBuilding, setDashboardFilterBuilding] = useState<string>("all");
+  const [dashboardFilterFloor, setDashboardFilterFloor] = useState<string>("all");
+  const [dashboardFilterTeam, setDashboardFilterTeam] = useState<string>("all");
+
+  const allTasks = useTaskStore((s) => s.tasks);
+
+  const allTasksProblems = useMemo(() => {
+    const isCounted = (p: MeasurePoint) =>
+      p.status === "measured" || p.status === "recheck_done";
+    const problems: (MeasurePoint & { taskId: string; buildingName: string; floorName: string })[] = [];
+    for (const t of allTasks) {
+      for (const p of t.points) {
+        if (isCounted(p) && (p.result === "out" || p.result === "critical")) {
+          problems.push({ ...p, taskId: t.id, buildingName: t.buildingName, floorName: t.floorName });
+        }
+      }
+    }
+    return problems;
+  }, [allTasks]);
+
+  const dashboardBuildings = useMemo(() => {
+    const set = new Set(allTasksProblems.map((p) => p.buildingName));
+    return Array.from(set);
+  }, [allTasksProblems]);
+
+  const dashboardFloors = useMemo(() => {
+    const filtered = dashboardFilterBuilding === "all"
+      ? allTasksProblems
+      : allTasksProblems.filter((p) => p.buildingName === dashboardFilterBuilding);
+    const set = new Set(filtered.map((p) => p.floorName));
+    return Array.from(set);
+  }, [allTasksProblems, dashboardFilterBuilding]);
+
+  const dashboardTeams = useMemo(() => {
+    const teamIds = new Set(allTasksProblems.map((p) => p.assignedTeamId).filter(Boolean) as string[]);
+    return TEAMS.filter((t) => teamIds.has(t.id));
+  }, [allTasksProblems]);
+
+  const dashboardFilteredProblems = useMemo(() => {
+    let list = allTasksProblems;
+    if (dashboardFilterBuilding !== "all") {
+      list = list.filter((p) => p.buildingName === dashboardFilterBuilding);
+    }
+    if (dashboardFilterFloor !== "all") {
+      list = list.filter((p) => p.floorName === dashboardFilterFloor);
+    }
+    if (dashboardFilterTeam !== "all") {
+      list = list.filter((p) => p.assignedTeamId === dashboardFilterTeam);
+    }
+    return list;
+  }, [allTasksProblems, dashboardFilterBuilding, dashboardFilterFloor, dashboardFilterTeam]);
+
+  const crossTaskDashboard = useMemo(() => {
+    const isOv = (p: MeasurePoint) => {
+      if (p.rectificationStatus !== "pending" && p.rectificationStatus !== "fixed") return false;
+      const dl = p.assignedDeadline;
+      if (!dl) return false;
+      return Date.now() > dl;
+    };
+    return {
+      total: dashboardFilteredProblems.length,
+      pending: dashboardFilteredProblems.filter((p) => p.rectificationStatus === "pending").length,
+      fixed: dashboardFilteredProblems.filter((p) => p.rectificationStatus === "fixed").length,
+      recheckPass: dashboardFilteredProblems.filter((p) => p.rectificationStatus === "recheck_pass").length,
+      recheckFail: dashboardFilteredProblems.filter((p) => p.rectificationStatus === "recheck_fail").length,
+      overdue: dashboardFilteredProblems.filter(isOv).length,
+    };
+  }, [dashboardFilteredProblems]);
 
   const taskFromStore = getCurrentTask();
   const task = taskFromStore ?? getTaskById(taskId ?? "");
@@ -119,8 +187,9 @@ export default function ResultPage() {
 
   const isOverdue = (p: MeasurePoint) => {
     if (p.rectificationStatus !== "pending" && p.rectificationStatus !== "fixed") return false;
-    if (!task?.deadline) return false;
-    return Date.now() > task.deadline;
+    const dl = p.assignedDeadline ?? task?.deadline;
+    if (!dl) return false;
+    return Date.now() > dl;
   };
 
   const pieData = useMemo(() => {
@@ -244,7 +313,9 @@ export default function ResultPage() {
         rectificationModal.remark || undefined,
         val,
         rectificationModal.rectifiedPhotos,
-        rectificationModal.recheckerName || undefined
+        rectificationModal.recheckerName || undefined,
+        rectificationModal.recheckRemark || undefined,
+        rectificationModal.recheckPhotos
       );
     } else {
       setPointRectification(
@@ -337,7 +408,7 @@ export default function ResultPage() {
       return;
     }
     const deadlineTs = new Date(batchAssignDeadline).getTime();
-    batchAssignTeam(batchAssignTeamId, deadlineTs, batchAssignRemark || undefined);
+    batchAssignTeam(Array.from(selectedPointIds), batchAssignTeamId, deadlineTs, batchAssignRemark || undefined);
     setShowBatchAssignModal(false);
     setSelectedPointIds(new Set());
     setBatchMode(false);
@@ -364,29 +435,34 @@ export default function ResultPage() {
   };
 
   const teamStats = useMemo(() => {
-    if (!task || !task.teamId) return [];
-    const team = TEAMS.find((t) => t.id === task.teamId);
-    if (!team) return [];
+    if (!task) return [];
     const isCounted = (p: MeasurePoint) =>
       p.status === "measured" || p.status === "recheck_done";
     const problems = task.points.filter(
       (p) => isCounted(p) && (p.result === "out" || p.result === "critical")
     );
-    return [
-      {
-        teamId: team.id,
-        teamName: team.name,
-        leader: team.leader,
-        phone: team.phone,
-        total: problems.length,
-        pending: problems.filter((p) => p.rectificationStatus === "pending").length,
-        fixed: problems.filter((p) => p.rectificationStatus === "fixed").length,
-        recheckPass: problems.filter((p) => p.rectificationStatus === "recheck_pass").length,
-        recheckFail: problems.filter((p) => p.rectificationStatus === "recheck_fail").length,
-        overdue: problems.filter(isOverdue).length,
-        problemPoints: problems,
-      },
-    ];
+    const byTeam = new Map<string, MeasurePoint[]>();
+    for (const p of problems) {
+      const tid = p.assignedTeamId ?? task.teamId ?? "unassigned";
+      if (!byTeam.has(tid)) byTeam.set(tid, []);
+      byTeam.get(tid)!.push(p);
+    }
+    return Array.from(byTeam.entries()).map(([tid, pts]) => {
+      const team = TEAMS.find((t) => t.id === tid);
+      return {
+        teamId: tid,
+        teamName: team?.name ?? (tid === "unassigned" ? "未分配" : "未知班组"),
+        leader: team?.leader ?? "",
+        phone: team?.phone ?? "",
+        total: pts.length,
+        pending: pts.filter((p) => p.rectificationStatus === "pending").length,
+        fixed: pts.filter((p) => p.rectificationStatus === "fixed").length,
+        recheckPass: pts.filter((p) => p.rectificationStatus === "recheck_pass").length,
+        recheckFail: pts.filter((p) => p.rectificationStatus === "recheck_fail").length,
+        overdue: pts.filter(isOverdue).length,
+        problemPoints: pts,
+      };
+    });
   }, [task]);
 
   const handleShare = () => {
@@ -405,6 +481,12 @@ export default function ResultPage() {
       byRoom.get(p.roomName)!.push(p);
     }
 
+    const uniqueTeamIds = new Set(problems.map((p) => p.assignedTeamId ?? task.teamId).filter(Boolean) as string[]);
+    const teamLines = Array.from(uniqueTeamIds).map((tid) => {
+      const t = TEAMS.find((x) => x.id === tid);
+      return t ? `${t.name}（${t.leader} ${t.phone}）` : "";
+    }).filter(Boolean).join("、");
+
     let problemList = "";
     let idx = 1;
     for (const [roomName, roomProblems] of byRoom.entries()) {
@@ -420,7 +502,9 @@ export default function ResultPage() {
           : "";
         const rectValue = p.rectifiedValue ? `，整改后${p.rectifiedValue}mm` : "";
         const overdueTag = isOverdue(p) ? "⚠逾期 " : "";
-        problemList += `  ${idx}. ${overdueTag}${p.inspectionName} · ${p.location} · 初测${p.measuredValue}mm(偏${(p.deviation ?? 0) > 0 ? "+" : ""}${(p.deviation ?? 0).toFixed(1)}mm) · ${rectLabel}${rectValue}${recheckConclusion}\n`;
+        const ptTeam = p.assignedTeamId ? TEAMS.find((t) => t.id === p.assignedTeamId) : null;
+        const teamTag = ptTeam ? `[${ptTeam.name}] ` : "";
+        problemList += `  ${idx}. ${overdueTag}${teamTag}${p.inspectionName} · ${p.location} · 初测${p.measuredValue}mm(偏${(p.deviation ?? 0) > 0 ? "+" : ""}${(p.deviation ?? 0).toFixed(1)}mm) · ${rectLabel}${rectValue}${recheckConclusion}\n`;
         idx++;
       }
     }
@@ -438,7 +522,7 @@ export default function ResultPage() {
   合格：${task.qualifiedPoints}点
   临界：${task.criticalPoints}点
   超差：${task.outPoints}点
-${team ? `责任班组：${team.name}（${team.leader} ${team.phone}）` : ""}
+${teamLines ? `责任班组：${teamLines}` : ""}
 ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()}` : ""}
 ━━━━━━━━━━━━━━━━━━━━━━━
 【整改状态汇总】
@@ -558,35 +642,70 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
           </div>
         </div>
 
-        {/* 整改驾驶舱 */}
+        {/* 整改驾驶舱（跨任务汇总） */}
         <div className="card p-4 animate-slideUp shadow-lg">
           <div className="flex items-center gap-2 mb-3">
             <ClipboardCheck className="w-5 h-5 text-primary-700" />
             <span className="font-medium text-gray-800">整改驾驶舱</span>
+            <span className="text-[10px] text-gray-400 ml-auto">本机所有测区汇总</span>
           </div>
+
+          <div className="flex gap-1.5 mb-3 flex-wrap">
+            <select
+              value={dashboardFilterBuilding}
+              onChange={(e) => { setDashboardFilterBuilding(e.target.value); setDashboardFilterFloor("all"); }}
+              className="h-7 bg-gray-50 border border-gray-200 rounded-lg px-2 text-[11px] outline-none focus:border-primary-600"
+            >
+              <option value="all">全部楼栋</option>
+              {dashboardBuildings.map((b) => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+            <select
+              value={dashboardFilterFloor}
+              onChange={(e) => setDashboardFilterFloor(e.target.value)}
+              className="h-7 bg-gray-50 border border-gray-200 rounded-lg px-2 text-[11px] outline-none focus:border-primary-600"
+            >
+              <option value="all">全部楼层</option>
+              {dashboardFloors.map((f) => (
+                <option key={f} value={f}>{f}</option>
+              ))}
+            </select>
+            <select
+              value={dashboardFilterTeam}
+              onChange={(e) => setDashboardFilterTeam(e.target.value)}
+              className="h-7 bg-gray-50 border border-gray-200 rounded-lg px-2 text-[11px] outline-none focus:border-primary-600"
+            >
+              <option value="all">全部班组</option>
+              {dashboardTeams.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+
           <div className="grid grid-cols-5 gap-2">
             <button onClick={() => scrollToProblemList("pending")} className="flex flex-col items-center p-2.5 rounded-xl bg-status-outBg active:bg-status-out/10 transition-colors">
-              <span className="text-xl font-bold text-status-out">{dashboardCounts.pending}</span>
+              <span className="text-xl font-bold text-status-out">{crossTaskDashboard.pending}</span>
               <span className="text-[10px] text-status-out mt-0.5">待整改</span>
             </button>
             <button onClick={() => scrollToProblemList("fixed")} className="flex flex-col items-center p-2.5 rounded-xl bg-status-criticalBg active:bg-status-critical/10 transition-colors">
-              <span className="text-xl font-bold text-status-critical">{dashboardCounts.fixed}</span>
+              <span className="text-xl font-bold text-status-critical">{crossTaskDashboard.fixed}</span>
               <span className="text-[10px] text-status-critical mt-0.5">待复查</span>
             </button>
             <button onClick={() => scrollToProblemList("recheck_pass")} className="flex flex-col items-center p-2.5 rounded-xl bg-status-qualifiedBg active:bg-status-qualified/10 transition-colors">
-              <span className="text-xl font-bold text-status-qualified">{dashboardCounts.recheckPass}</span>
+              <span className="text-xl font-bold text-status-qualified">{crossTaskDashboard.recheckPass}</span>
               <span className="text-[10px] text-status-qualified mt-0.5">复查合格</span>
             </button>
             <button onClick={() => scrollToProblemList("recheck_fail")} className="flex flex-col items-center p-2.5 rounded-xl bg-red-100 active:bg-red-200 transition-colors">
-              <span className="text-xl font-bold text-red-700">{dashboardCounts.recheckFail}</span>
+              <span className="text-xl font-bold text-red-700">{crossTaskDashboard.recheckFail}</span>
               <span className="text-[10px] text-red-700 mt-0.5">仍超差</span>
             </button>
-            <button onClick={() => scrollToProblemList("overdue")} className={cn("flex flex-col items-center p-2.5 rounded-xl transition-colors", dashboardCounts.overdue > 0 ? "bg-red-50 active:bg-red-100" : "bg-gray-50 active:bg-gray-100")}>
-              <span className={cn("text-xl font-bold flex items-center gap-0.5", dashboardCounts.overdue > 0 ? "text-red-600" : "text-gray-400")}>
-                {dashboardCounts.overdue > 0 && <AlertTriangle className="w-4 h-4" />}
-                {dashboardCounts.overdue}
+            <button onClick={() => scrollToProblemList("overdue")} className={cn("flex flex-col items-center p-2.5 rounded-xl transition-colors", crossTaskDashboard.overdue > 0 ? "bg-red-50 active:bg-red-100" : "bg-gray-50 active:bg-gray-100")}>
+              <span className={cn("text-xl font-bold flex items-center gap-0.5", crossTaskDashboard.overdue > 0 ? "text-red-600" : "text-gray-400")}>
+                {crossTaskDashboard.overdue > 0 && <AlertTriangle className="w-4 h-4" />}
+                {crossTaskDashboard.overdue}
               </span>
-              <span className={cn("text-[10px] mt-0.5", dashboardCounts.overdue > 0 ? "text-red-600" : "text-gray-400")}>逾期</span>
+              <span className={cn("text-[10px] mt-0.5", crossTaskDashboard.overdue > 0 ? "text-red-600" : "text-gray-400")}>逾期</span>
             </button>
           </div>
         </div>
@@ -896,20 +1015,73 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
                                       {(p.deviation ?? 0) > 0 ? "+" : ""}{(p.deviation ?? 0).toFixed(1)}mm
                                     </span>
                                   </div>
-                                  {p.rectifiedValue !== undefined && (
+                                  {(p.rectificationStatus === "recheck_pass" || p.rectificationStatus === "recheck_fail" || p.rectificationStatus === "fixed") && (
+                                    <div className="mt-2 p-2 rounded-lg bg-gray-50 border border-gray-100">
+                                      <div className="text-[10px] text-gray-500 font-semibold mb-1.5">本轮整改记录</div>
+                                      {p.rectificationRemark && (
+                                        <div className="text-[11px] text-gray-600 mb-1">
+                                          <span className="text-gray-400">整改说明：</span>{p.rectificationRemark}
+                                        </div>
+                                      )}
+                                      {p.rectifiedValue !== undefined && (
+                                        <div className="text-[11px] text-gray-600 mb-1">
+                                          <span className="text-gray-400">整改后读数：</span>
+                                          <span className="font-medium">{p.rectifiedValue}mm</span>
+                                        </div>
+                                      )}
+                                      {p.rectifiedPhotos.length > 0 && (
+                                        <div className="mb-1.5">
+                                          <span className="text-[10px] text-gray-400">整改照片：</span>
+                                          <div className="flex gap-1 mt-0.5">
+                                            {p.rectifiedPhotos.slice(0, 4).map((photo, i) => (
+                                              <div key={`cp-rect-${i}`} className="w-10 h-10 rounded overflow-hidden bg-gray-200">
+                                                <img src={photo} alt="" className="w-full h-full object-cover" />
+                                              </div>
+                                            ))}
+                                            {p.rectifiedPhotos.length > 4 && <span className="text-gray-400 text-[9px] flex items-center">+{p.rectifiedPhotos.length - 4}</span>}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {p.recheckRemark && (
+                                        <div className="text-[11px] text-gray-600 mb-1 border-t border-gray-200 pt-1 mt-1">
+                                          <span className="text-gray-400">复查结论：</span>{p.recheckRemark}
+                                        </div>
+                                      )}
+                                      {p.recheckPhotos.length > 0 && (
+                                        <div className="mb-1">
+                                          <span className="text-[10px] text-gray-400">复查照片：</span>
+                                          <div className="flex gap-1 mt-0.5">
+                                            {p.recheckPhotos.slice(0, 4).map((photo, i) => (
+                                              <div key={`cp-rchk-${i}`} className="w-10 h-10 rounded overflow-hidden bg-gray-200">
+                                                <img src={photo} alt="" className="w-full h-full object-cover" />
+                                              </div>
+                                            ))}
+                                            {p.recheckPhotos.length > 4 && <span className="text-gray-400 text-[9px] flex items-center">+{p.recheckPhotos.length - 4}</span>}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {p.recheckerName && (
+                                        <div className="text-[10px] text-gray-400 border-t border-gray-200 pt-1 mt-1">
+                                          复查人：{p.recheckerName}
+                                          {p.recheckedAt && <span className="ml-2">{formatDate(p.recheckedAt)}</span>}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                  {p.rectifiedValue !== undefined && p.rectificationStatus === "pending" && (
                                     <div className="mt-1 text-[11px] text-gray-500">
                                       <span className="text-gray-400">整改后：</span>
                                       <span className="font-medium text-gray-700">{p.rectifiedValue}mm</span>
                                       {p.recheckerName && <span className="ml-2 text-gray-400">复查人：{p.recheckerName}</span>}
                                     </div>
                                   )}
-                                  {p.recheckRemark && (
+                                  {p.recheckRemark && p.rectificationStatus === "pending" && (
                                     <div className="mt-1 text-[11px] text-gray-500 bg-gray-50 px-2 py-1 rounded">
                                       <span className="text-gray-400">复查结论：</span>
                                       <span className="text-gray-700">{p.recheckRemark}</span>
                                     </div>
                                   )}
-                                  {p.rectificationRemark && (
+                                  {p.rectificationRemark && p.rectificationStatus === "pending" && (
                                     <div className="mt-1 text-[11px] text-gray-500 bg-gray-50 px-2 py-1 rounded">
                                       备注：{p.rectificationRemark}
                                     </div>

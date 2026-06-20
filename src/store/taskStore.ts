@@ -105,7 +105,9 @@ interface TaskStore {
     remark?: string,
     rectifiedValue?: number,
     rectifiedPhotos?: string[],
-    recheckerName?: string
+    recheckerName?: string,
+    recheckRemark?: string,
+    recheckPhotos?: string[]
   ) => void;
 
   batchSetRectification: (
@@ -116,6 +118,7 @@ interface TaskStore {
   ) => void;
 
   batchAssignTeam: (
+    pointIds: string[],
     teamId: string,
     deadline: number,
     remark?: string
@@ -410,7 +413,9 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     remark,
     rectifiedValue,
     rectifiedPhotos = [],
-    recheckerName
+    recheckerName,
+    recheckRemark,
+    recheckPhotos = []
   ) => {
     const { getCurrentTask, updatePoint } = get();
     const task = getCurrentTask()!;
@@ -423,10 +428,10 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       rectifiedAt: point.rectifiedAt ?? Date.now(),
       rectificationRemark: point.rectificationRemark,
       rectifiedPhotos: [...point.rectifiedPhotos],
-      recheckerName: point.recheckerName,
-      recheckRemark: point.recheckRemark,
-      recheckPhotos: [...point.recheckPhotos],
-      recheckedAt: point.recheckedAt,
+      recheckerName: recheckerName ?? point.recheckerName,
+      recheckRemark: recheckRemark ?? point.recheckRemark,
+      recheckPhotos: [...point.recheckPhotos, ...recheckPhotos],
+      recheckedAt: point.recheckedAt ?? Date.now(),
     };
 
     updatePoint(pointId, {
@@ -470,19 +475,23 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     });
   },
 
-  batchAssignTeam: (teamId, deadline, remark) => {
+  batchAssignTeam: (pointIds, teamId, deadline, remark) => {
     set((state) => {
       const task = state.tasks.find((t) => t.id === state.currentTaskId);
       if (!task) return state;
 
-      const withAssignment = {
-        ...task,
-        teamId,
-        deadline,
-        remark,
-      };
+      const newPoints = task.points.map((p) => {
+        if (!pointIds.includes(p.id)) return p;
+        return {
+          ...p,
+          assignedTeamId: teamId,
+          assignedDeadline: deadline,
+          assignedRemark: remark ?? p.assignedRemark,
+        };
+      });
+      const newTask = updateTaskStats({ ...task, points: newPoints });
       const nextTasks = state.tasks.map((t) =>
-        t.id === task.id ? withAssignment : t
+        t.id === task.id ? newTask : t
       );
       saveTasksToStorage(nextTasks);
       return { tasks: nextTasks };
@@ -513,14 +522,28 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       const task = state.tasks.find((t) => t.id === state.currentTaskId);
       if (!task) return state;
 
+      const isCounted = (p: MeasurePoint) =>
+        p.status === "measured" || p.status === "recheck_done";
+      const problemPointIds = task.points
+        .filter((p) => isCounted(p) && (p.result === "out" || p.result === "critical"))
+        .map((p) => p.id);
+
+      const newPoints = task.points.map((p) =>
+        problemPointIds.includes(p.id)
+          ? { ...p, assignedTeamId: teamId, assignedDeadline: deadline, assignedRemark: remark ?? p.assignedRemark }
+          : p
+      );
+
       const withAssignment = {
         ...task,
         teamId,
         deadline,
         remark,
+        points: newPoints,
       };
+      const newTask = updateTaskStats(withAssignment);
       const nextTasks = state.tasks.map((t) =>
-        t.id === task.id ? withAssignment : t
+        t.id === task.id ? newTask : t
       );
       saveTasksToStorage(nextTasks);
       return { tasks: nextTasks };

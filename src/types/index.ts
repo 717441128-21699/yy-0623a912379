@@ -89,6 +89,9 @@ export interface MeasurePoint {
   rectificationHistory: RectificationRecord[];
   draftValue?: string;
   draftPhotos: string[];
+  assignedTeamId?: string;
+  assignedDeadline?: number;
+  assignedRemark?: string;
 }
 
 export type TaskStatus = "pending" | "in_progress" | "completed";
