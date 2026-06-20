@@ -11,6 +11,13 @@ import {
   Ruler,
   ClipboardList,
   Layers,
+  History,
+  Trash2,
+  ArrowRight,
+  Clock,
+  CheckCircle2,
+  PauseCircle,
+  FileText,
 } from "lucide-react";
 import { useTaskStore } from "@/store/taskStore";
 import {
@@ -20,13 +27,22 @@ import {
   getBuildingFloors,
   getFloorName,
 } from "@/data/mockData";
+import { formatDate, getPointStatusLabel } from "@/utils/measureUtils";
 import { cn } from "@/lib/utils";
 
 export default function TaskListPage() {
   const navigate = useNavigate();
-  const { selection, setSelection, createTask } = useTaskStore();
+  const {
+    selection,
+    setSelection,
+    createTask,
+    tasks,
+    loadTask,
+    clearAllTasks,
+  } = useTaskStore();
   const [inspectorName, setInspectorName] = useState("李工");
   const [floorPickerOpen, setFloorPickerOpen] = useState(false);
+  const [showHistory, setShowHistory] = useState(true);
 
   const currentBuilding = BUILDINGS.find((b) => b.id === selection.buildingId)!;
   const currentUnit = UNITS.find((u) => u.id === selection.unitId)!;
@@ -48,7 +64,9 @@ export default function TaskListPage() {
     if (selection.inspectionIds.length === INSPECTION_STANDARDS.length) {
       setSelection({ inspectionIds: [] });
     } else {
-      setSelection({ inspectionIds: INSPECTION_STANDARDS.map((s) => s.id) });
+      setSelection({
+        inspectionIds: INSPECTION_STANDARDS.map((s) => s.id),
+      });
     }
   };
 
@@ -66,9 +84,22 @@ export default function TaskListPage() {
     navigate(`/measure/${task.id}`);
   };
 
+  const handleContinue = (taskId: string) => {
+    loadTask(taskId);
+    navigate(`/measure/${taskId}`);
+  };
+
+  const handleViewResult = (taskId: string) => {
+    loadTask(taskId);
+    navigate(`/result/${taskId}`);
+  };
+
+  const inProgressTasks = tasks.filter((t) => t.status !== "completed");
+  const completedTasks = tasks.filter((t) => t.status === "completed");
+  const hasSavedTasks = tasks.length > 0;
+
   return (
     <div className="min-h-screen bg-gray-50 pb-32">
-      {/* 顶部导航栏 */}
       <div className="bg-primary-800 text-white pt-10 pb-6 px-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -89,8 +120,169 @@ export default function TaskListPage() {
       </div>
 
       <div className="px-4 -mt-4 space-y-4">
+        {/* 本机已保存任务 */}
+        {hasSavedTasks && (
+          <div className="card p-4 animate-slideUp">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <History className="w-5 h-5 text-accent-orange" />
+                <span className="font-medium text-gray-800">
+                  本机任务记录
+                </span>
+                <span className="text-xs text-gray-400">
+                  离线保存，刷新不丢失
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="text-xs text-primary-700 font-medium"
+                >
+                  {showHistory ? "收起" : "展开"}
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm("确认清空本机所有任务记录？")) clearAllTasks();
+                  }}
+                  className="w-7 h-7 rounded-lg bg-gray-100 text-gray-400 flex items-center justify-center active:bg-gray-200"
+                  title="清空记录"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {showHistory && (
+              <div className="space-y-2">
+                {inProgressTasks.map((t) => {
+                  const progress =
+                    t.totalPoints > 0
+                      ? Math.round(
+                          ((t.measuredPoints + t.recheckPendingPoints) /
+                            t.totalPoints) *
+                            100
+                        )
+                      : 0;
+                  return (
+                    <div
+                      key={t.id}
+                      className="border border-primary-100 bg-primary-50/50 rounded-xl p-3"
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-orange/10 text-accent-orange text-xs font-semibold">
+                              <PauseCircle className="w-3 h-3" />
+                              进行中
+                            </span>
+                            {t.recheckPendingPoints > 0 && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 text-xs font-semibold">
+                                待复测 {t.recheckPendingPoints}点
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-sm font-semibold text-gray-800 mt-1.5">
+                            {t.buildingName} {t.floorName} {t.unitName}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-0.5">
+                            {t.unitType} · {t.inspectionIds.length}项检查 ·{" "}
+                            {formatDate(t.startTime)}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleContinue(t.id)}
+                          className="shrink-0 btn-primary h-9 px-3 text-xs flex items-center gap-1"
+                        >
+                          继续
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs">
+                        <div className="flex-1 h-1.5 bg-white rounded-full overflow-hidden border border-primary-100">
+                          <div
+                            className="h-full bg-gradient-to-r from-primary-600 to-primary-500"
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
+                        <span className="font-semibold text-primary-800">
+                          {t.measuredPoints + t.recheckPendingPoints}/
+                          {t.totalPoints}点
+                        </span>
+                        <span
+                          className={cn(
+                            "font-semibold",
+                            t.passRate >= 90 && "text-status-qualified",
+                            t.passRate >= 70 &&
+                              t.passRate < 90 &&
+                              "text-status-critical",
+                            t.passRate < 70 &&
+                              t.measuredPoints > 0 &&
+                              "text-status-out"
+                          )}
+                        >
+                          {t.measuredPoints > 0 ? `${t.passRate}%合格` : "-"}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {completedTasks.slice(0, 3).map((t) => (
+                  <div
+                    key={t.id}
+                    className="border border-gray-100 bg-gray-50 rounded-xl p-3"
+                  >
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-qualified/10 text-status-qualified text-xs font-semibold">
+                            <CheckCircle2 className="w-3 h-3" />
+                            已完成
+                          </span>
+                        </div>
+                        <div className="text-sm font-semibold text-gray-800 mt-1.5">
+                          {t.buildingName} {t.floorName} {t.unitName}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {t.unitType} · 合格率{" "}
+                          <span
+                            className={cn(
+                              "font-semibold",
+                              t.passRate >= 90 && "text-status-qualified",
+                              t.passRate >= 70 &&
+                                t.passRate < 90 &&
+                                "text-status-critical",
+                              t.passRate < 70 && "text-status-out"
+                            )}
+                          >
+                            {t.passRate}%
+                          </span>{" "}
+                          · {formatDate(t.startTime)}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleViewResult(t.id)}
+                        className="shrink-0 btn-secondary h-9 px-3 text-xs flex items-center gap-1"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        结果
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {completedTasks.length > 3 && (
+                  <div className="text-center text-xs text-gray-400 pt-1">
+                    另有 {completedTasks.length - 3} 条已完成记录...
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 楼栋选择 */}
-        <div className="card p-4 animate-slideUp">
+        <div className="card p-4">
           <div className="flex items-center gap-2 mb-3">
             <Building2 className="w-5 h-5 text-primary-700" />
             <span className="font-medium text-gray-800">楼栋 & 楼层</span>
@@ -119,7 +311,10 @@ export default function TaskListPage() {
                 onClick={() => setFloorPickerOpen(!floorPickerOpen)}
                 className="w-full h-11 bg-gray-50 border border-gray-200 rounded-xl px-3 flex items-center justify-between text-sm font-medium"
               >
-                <span>{currentBuilding.name} {getFloorName(selection.floorNumber)}</span>
+                <span>
+                  {currentBuilding.name}{" "}
+                  {getFloorName(selection.floorNumber)}
+                </span>
                 {floorPickerOpen ? (
                   <ChevronUp className="w-4 h-4 text-gray-400" />
                 ) : (
@@ -175,7 +370,9 @@ export default function TaskListPage() {
                 <div
                   className={cn(
                     "text-base font-semibold",
-                    selection.unitId === u.id ? "text-primary-800" : "text-gray-800"
+                    selection.unitId === u.id
+                      ? "text-primary-800"
+                      : "text-gray-800"
                   )}
                 >
                   {u.name}
@@ -200,7 +397,8 @@ export default function TaskListPage() {
               onClick={toggleAllInspections}
               className="text-xs text-primary-700 font-medium active:opacity-70"
             >
-              {selection.inspectionIds.length === INSPECTION_STANDARDS.length
+              {selection.inspectionIds.length ===
+              INSPECTION_STANDARDS.length
                 ? "取消全选"
                 : "全选"}
             </button>
@@ -243,7 +441,9 @@ export default function TaskListPage() {
                       </span>
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
-                      <span>允许偏差 ±{s.allowableDeviation}{s.unit}</span>
+                      <span>允许偏差 ±{s.allowableDeviation}
+                        {s.unit}
+                      </span>
                       <span className="text-primary-700 font-medium">
                         {roomPoints}个测点
                       </span>
@@ -330,7 +530,8 @@ export default function TaskListPage() {
             <div className="text-sm text-gray-600">
               <span className="text-gray-400">测区：</span>
               <span className="font-medium text-gray-800">
-                {currentBuilding.name} {getFloorName(selection.floorNumber)} {currentUnit.name}
+                {currentBuilding.name} {getFloorName(selection.floorNumber)}{" "}
+                {currentUnit.name}
               </span>
             </div>
             <div className="text-sm">

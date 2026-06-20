@@ -15,13 +15,15 @@ import {
   Target,
   GripVertical,
   Image as ImageIcon,
-  Trash2,
+  Pause,
+  Save,
 } from "lucide-react";
 import { useTaskStore } from "@/store/taskStore";
 import {
   getResultLabel,
   getResultColorClass,
   getResultDotColor,
+  getPointStatusLabel,
 } from "@/utils/measureUtils";
 import { INSPECTION_STANDARDS } from "@/data/mockData";
 import { cn } from "@/lib/utils";
@@ -30,9 +32,18 @@ import type { PointResult } from "@/types";
 export default function MeasurePage() {
   const { taskId } = useParams();
   const navigate = useNavigate();
-  const { getCurrentTask, updatePoint, recordMeasurement, completeTask } =
-    useTaskStore();
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const {
+    getCurrentTask,
+    getTaskById,
+    loadTask,
+    updatePoint,
+    recordMeasurement,
+    markPointForRecheck,
+    recordRecheckMeasurement,
+    updateTaskNavigation,
+    completeTask,
+  } = useTaskStore();
+
   const [inputValue, setInputValue] = useState("");
   const [showRecheckModal, setShowRecheckModal] = useState(false);
   const [pendingResult, setPendingResult] = useState<{
@@ -41,11 +52,49 @@ export default function MeasurePage() {
     deviationPercent: number;
   } | null>(null);
   const [tempPhotos, setTempPhotos] = useState<string[]>([]);
-  const [selectedInspectionFilter, setSelectedInspectionFilter] = useState<string | null>(null);
   const [showPhotoPreview, setShowPhotoPreview] = useState<string | null>(null);
+  const [showSavedTip, setShowSavedTip] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const task = getCurrentTask();
+  const taskFromStore = getCurrentTask();
+  const task = taskFromStore ?? getTaskById(taskId ?? "");
+
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [selectedInspectionFilter, setSelectedInspectionFilter] = useState<
+    string | null
+  >(null);
+  const [initialized, setInitialized] = useState(false);
+
+  useEffect(() => {
+    if (task && !initialized) {
+      if (task.id !== useTaskStore.getState().currentTaskId) {
+        loadTask(task.id);
+      }
+      setCurrentIndex(task.currentPointIndex || 0);
+      setSelectedInspectionFilter(task.currentInspectionFilter ?? null);
+      setInitialized(true);
+    }
+  }, [task, initialized, loadTask]);
+
+  useEffect(() => {
+    if (task && initialized) {
+      updateTaskNavigation(currentIndex, selectedInspectionFilter);
+    }
+  }, [task, currentIndex, selectedInspectionFilter, initialized, updateTaskNavigation]);
+
+  useEffect(() => {
+    if (!task || !initialized) return;
+    if (currentPoint) {
+      if (currentPoint.status === "recheck_pending") {
+        setInputValue("");
+      } else if (currentPoint.measuredValue !== undefined) {
+        setInputValue(String(currentPoint.measuredValue));
+      } else {
+        setInputValue("");
+      }
+    }
+    setTempPhotos([]);
+  }, [currentIndex, selectedInspectionFilter, task?.id, initialized]);
 
   const filteredPoints = useMemo(() => {
     if (!task) return [];
@@ -63,31 +112,32 @@ export default function MeasurePage() {
     : null;
 
   useEffect(() => {
-    if (task && taskId && !task) {
+    if (taskId && !task) {
       navigate("/tasks");
     }
   }, [task, taskId, navigate]);
 
-  useEffect(() => {
-    if (currentPoint && currentPoint.measuredValue !== undefined) {
-      setInputValue(String(currentPoint.measuredValue));
-    } else {
-      setInputValue("");
-    }
-    setTempPhotos([]);
-  }, [currentIndex, currentPoint?.id]);
-
   const groupedInspections = useMemo(() => {
     if (!task) return [];
-    const map = new Map<string, { id: string; name: string; total: number; done: number }>();
+    const map = new Map<
+      string,
+      { id: string; name: string; total: number; done: number; recheckPending: number }
+    >();
     for (const p of task.points) {
       if (!map.has(p.inspectionId)) {
         const insp = INSPECTION_STANDARDS.find((s) => s.id === p.inspectionId)!;
-        map.set(p.inspectionId, { id: p.inspectionId, name: insp.name, total: 0, done: 0 });
+        map.set(p.inspectionId, {
+          id: p.inspectionId,
+          name: insp.name,
+          total: 0,
+          done: 0,
+          recheckPending: 0,
+        });
       }
       const entry = map.get(p.inspectionId)!;
       entry.total++;
-      if (p.status !== "pending") entry.done++;
+      if (p.status === "measured" || p.status === "recheck_done") entry.done++;
+      if (p.status === "recheck_pending") entry.recheckPending++;
     }
     return Array.from(map.values());
   }, [task]);
@@ -117,10 +167,22 @@ export default function MeasurePage() {
     const value = parseFloat(inputValue);
     if (isNaN(value)) return;
 
-    const result = recordMeasurement(currentPoint.id, value, tempPhotos);
-    setPendingResult(result);
+    let resultInfo;
+    if (currentPoint.status === "recheck_pending") {
+      resultInfo = recordRecheckMeasurement(
+        currentPoint.id,
+        value,
+        tempPhotos
+      );
+    } else {
+      resultInfo = recordMeasurement(currentPoint.id, value, tempPhotos);
+    }
 
-    if (result.result === "out") {
+    setPendingResult(resultInfo);
+    setShowSavedTip(true);
+    setTimeout(() => setShowSavedTip(false), 1200);
+
+    if (resultInfo.result === "out") {
       setShowRecheckModal(true);
     }
   };
@@ -133,17 +195,18 @@ export default function MeasurePage() {
 
   const handleRecheck = () => {
     if (!currentPoint) return;
-    updatePoint(currentPoint.id, {
-      status: "recheck",
-      isRechecked: true,
-      measuredValue: undefined,
-      deviation: undefined,
-      deviationPercent: undefined,
-      result: undefined,
-    });
+    markPointForRecheck(currentPoint.id);
     setInputValue("");
     setTempPhotos([]);
     setShowRecheckModal(false);
+    setPendingResult(null);
+  };
+
+  const handleManualRecheck = () => {
+    if (!currentPoint) return;
+    markPointForRecheck(currentPoint.id);
+    setInputValue("");
+    setTempPhotos([]);
     setPendingResult(null);
   };
 
@@ -176,18 +239,41 @@ export default function MeasurePage() {
     if (currentIndex < filteredPoints.length - 1) {
       setCurrentIndex((i) => i + 1);
     } else {
-      if (task && task.measuredPoints === task.totalPoints) {
-        completeTask();
-        navigate(`/result/${task.id}`);
+      if (!task) return;
+      if (task.measuredPoints + task.recheckPendingPoints === task.totalPoints) {
+        if (task.recheckPendingPoints === 0) {
+          completeTask();
+          navigate(`/result/${task.id}`);
+        } else {
+          const firstRecheck = task.points.findIndex(
+            (p) => p.status === "recheck_pending"
+          );
+          if (firstRecheck !== -1) {
+            const point = task.points[firstRecheck];
+            const inspGroup = groupedInspections.find(
+              (g) => g.id === point.inspectionId
+            );
+            if (inspGroup) {
+              setSelectedInspectionFilter(inspGroup.id);
+              const idxInFiltered = task.points
+                .filter((p) => p.inspectionId === inspGroup.id)
+                .findIndex((p) => p.id === point.id);
+              setCurrentIndex(idxInFiltered >= 0 ? idxInFiltered : 0);
+            }
+          }
+        }
       } else {
-        const firstPending = task!.points.findIndex((p) => p.status === "pending");
+        const firstPending = task.points.findIndex(
+          (p) => p.status === "pending"
+        );
         if (firstPending !== -1) {
-          setCurrentIndex(0);
-          const point = task!.points[firstPending];
-          const inspGroup = groupedInspections.find((g) => g.id === point.inspectionId);
+          const point = task.points[firstPending];
+          const inspGroup = groupedInspections.find(
+            (g) => g.id === point.inspectionId
+          );
           if (inspGroup) {
             setSelectedInspectionFilter(inspGroup.id);
-            const idxInFiltered = task!.points
+            const idxInFiltered = task.points
               .filter((p) => p.inspectionId === inspGroup.id)
               .findIndex((p) => p.id === point.id);
             setCurrentIndex(idxInFiltered >= 0 ? idxInFiltered : 0);
@@ -205,13 +291,26 @@ export default function MeasurePage() {
     );
   }
 
-  const progress = task.totalPoints > 0 ? (task.measuredPoints / task.totalPoints) * 100 : 0;
+  const doneCount = task.measuredPoints;
+  const totalActive = task.totalPoints - task.recheckPendingPoints;
+  const progress =
+    totalActive > 0 ? (doneCount / totalActive) * 100 : 0;
   const displayResult = pendingResult?.result ?? currentPoint.result;
   const displayDeviation = pendingResult?.deviation ?? currentPoint.deviation;
-  const displayDeviationPercent = pendingResult?.deviationPercent ?? currentPoint.deviationPercent;
+  const displayDeviationPercent =
+    pendingResult?.deviationPercent ?? currentPoint.deviationPercent;
+  const isRecheckPending = currentPoint.status === "recheck_pending";
+
+  const getPointColor = (p: (typeof filteredPoints)[number]) => {
+    if (p.status === "recheck_pending") return "bg-accent-orange text-white";
+    if (p.result === "out") return "bg-status-outBg text-status-out";
+    if (p.result === "critical") return "bg-status-criticalBg text-status-critical";
+    if (p.result === "qualified") return "bg-status-qualifiedBg text-status-qualified";
+    return "bg-gray-100 text-gray-400";
+  };
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-56">
+    <div className="min-h-screen bg-gray-50 pb-80">
       {/* 顶部状态栏 */}
       <div className="sticky top-0 z-20 bg-white border-b border-gray-100">
         <div className="flex items-center justify-between px-4 pt-10 pb-2">
@@ -228,18 +327,32 @@ export default function MeasurePage() {
             <div className="text-xs text-gray-400 mt-0.5">{task.unitType}</div>
           </div>
           <div className="text-right">
-            <div className="text-xs text-gray-400">总进度</div>
+            <div className="text-xs text-gray-400">已确认</div>
             <div className="text-sm font-bold text-primary-800">
               {task.measuredPoints}/{task.totalPoints}
             </div>
           </div>
         </div>
-        <div className="px-4 pb-3">
+        <div className="px-4 pb-2">
           <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
             <div
               className="h-full bg-gradient-to-r from-primary-600 to-primary-500 transition-all duration-500"
               style={{ width: `${progress}%` }}
             />
+          </div>
+          <div className="flex items-center justify-between mt-1.5 text-[11px] text-gray-400">
+            <span>
+              {task.measuredPoints}已测 · {task.recheckPendingPoints > 0 && (
+                <span className="text-accent-orange font-semibold">
+                  {task.recheckPendingPoints}待复测 ·
+                </span>
+              )}
+              {task.totalPoints - task.measuredPoints - task.recheckPendingPoints}待测
+            </span>
+            <span className="flex items-center gap-1">
+              <Save className="w-3 h-3" />
+              自动保存
+            </span>
           </div>
         </div>
 
@@ -282,30 +395,59 @@ export default function MeasurePage() {
                     : "bg-white"
                 )}
               >
-                {g.done}/{g.total}
+                {g.recheckPending > 0
+                  ? `${g.recheckPending}待复/${g.total}`
+                  : `${g.done}/${g.total}`}
               </span>
             </button>
           ))}
         </div>
       </div>
 
+      {/* 已保存提示 */}
+      {showSavedTip && (
+        <div className="fixed top-28 left-1/2 -translate-x-1/2 z-40 bg-gray-900/90 text-white px-4 py-2 rounded-full text-sm flex items-center gap-1.5 animate-slideUp shadow-lg">
+          <Save className="w-4 h-4" />
+          已保存到本机
+        </div>
+      )}
+
       <div className="px-4 pt-4 space-y-4">
         {/* 当前测点进度指示 */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-primary-800 text-white font-bold text-sm">
+            <span
+              className={cn(
+                "inline-flex items-center justify-center w-9 h-9 rounded-xl font-bold text-sm",
+                isRecheckPending
+                  ? "bg-accent-orange text-white"
+                  : "bg-primary-800 text-white"
+              )}
+            >
               {currentIndex + 1}
             </span>
             <div>
-              <div className="text-sm font-semibold text-gray-800">
+              <div className="text-sm font-semibold text-gray-800 flex items-center gap-2">
                 {currentInspection.name}
+                {isRecheckPending && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-orange/15 text-accent-orange text-[10px] font-semibold">
+                    <Pause className="w-3 h-3" />
+                    待复测
+                  </span>
+                )}
+                {currentPoint.recheckCount > 0 && !isRecheckPending && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[10px] font-semibold">
+                    已复测{currentPoint.recheckCount}次
+                  </span>
+                )}
               </div>
               <div className="text-xs text-gray-400">
-                本组第 {currentIndex + 1} / {filteredPoints.length} 点
+                本组第 {currentIndex + 1} / {filteredPoints.length} 点 ·
+                状态：{getPointStatusLabel(currentPoint.status)}
               </div>
             </div>
           </div>
-          {displayResult && (
+          {displayResult && !isRecheckPending && (
             <span
               className={cn(
                 "px-3 py-1 rounded-full text-xs font-semibold border",
@@ -313,6 +455,11 @@ export default function MeasurePage() {
               )}
             >
               {getResultLabel(displayResult)}
+            </span>
+          )}
+          {isRecheckPending && (
+            <span className="px-3 py-1 rounded-full text-xs font-semibold border border-accent-orange/30 bg-orange-50 text-accent-orange">
+              请重新测量
             </span>
           )}
         </div>
@@ -370,8 +517,21 @@ export default function MeasurePage() {
         {/* 户型点位列图 */}
         <div className="card p-4">
           <div className="text-xs text-gray-500 mb-3 flex items-center justify-between">
-            <span>同检查项测点分布</span>
-            <span className="text-gray-400">点击可快速跳转</span>
+            <span>同检查项测点分布（点击跳转）</span>
+            <span className="flex items-center gap-2 text-[10px]">
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-gray-300" />
+                待测
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-accent-orange" />
+                待复测
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-status-qualified" />
+                合格
+              </span>
+            </span>
           </div>
           <div className="grid grid-cols-8 gap-1.5">
             {filteredPoints.map((p, idx) => (
@@ -379,21 +539,18 @@ export default function MeasurePage() {
                 key={p.id}
                 onClick={() => setCurrentIndex(idx)}
                 className={cn(
-                  "aspect-square rounded-lg text-xs font-bold flex items-center justify-center relative transition-all",
-                  idx === currentIndex
-                    ? "bg-primary-800 text-white scale-110 shadow-md z-10 ring-2 ring-primary-800/30"
-                    : p.result === "out"
-                    ? "bg-status-outBg text-status-out"
-                    : p.result === "critical"
-                    ? "bg-status-criticalBg text-status-critical"
-                    : p.result === "qualified"
-                    ? "bg-status-qualifiedBg text-status-qualified"
-                    : "bg-gray-100 text-gray-400"
+                  "aspect-square rounded-lg text-[10px] font-bold flex items-center justify-center relative transition-all",
+                  getPointColor(p),
+                  idx === currentIndex &&
+                    "scale-110 shadow-md z-10 ring-2 ring-primary-800/40"
                 )}
               >
                 {idx + 1}
                 {idx === currentIndex && (
                   <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-accent-orange animate-pulseDot" />
+                )}
+                {p.status === "recheck_pending" && idx !== currentIndex && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-white border border-accent-orange" />
                 )}
               </button>
             ))}
@@ -404,29 +561,52 @@ export default function MeasurePage() {
         <div
           className={cn(
             "card p-5 border-l-4 transition-colors",
-            displayResult === "qualified" && "border-l-status-qualified",
-            displayResult === "critical" && "border-l-status-critical",
-            displayResult === "out" && "border-l-status-out",
-            !displayResult && "border-l-transparent"
+            isRecheckPending && "border-l-accent-orange",
+            !isRecheckPending &&
+              displayResult === "qualified" &&
+              "border-l-status-qualified",
+            !isRecheckPending &&
+              displayResult === "critical" &&
+              "border-l-status-critical",
+            !isRecheckPending &&
+              displayResult === "out" &&
+              "border-l-status-out",
+            !isRecheckPending && !displayResult && "border-l-transparent"
           )}
         >
-          <div className="text-xs text-gray-500 mb-1">测量读数</div>
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs text-gray-500">
+              {isRecheckPending ? "复测读数" : "测量读数"}
+            </div>
+            {currentPoint.standardValue > 0 && (
+              <div className="text-xs text-gray-400">
+                标准值 {currentPoint.standardValue}mm
+              </div>
+            )}
+          </div>
           <div className="flex items-end justify-between">
             <div className="flex items-baseline gap-2">
               <span
                 className={cn(
                   "text-5xl font-bold tracking-tight",
-                  displayResult === "qualified" && "text-status-qualified",
-                  displayResult === "critical" && "text-status-critical",
-                  displayResult === "out" && "text-status-out",
-                  !displayResult && "text-gray-800"
+                  isRecheckPending && "text-accent-orange",
+                  !isRecheckPending &&
+                    displayResult === "qualified" &&
+                    "text-status-qualified",
+                  !isRecheckPending &&
+                    displayResult === "critical" &&
+                    "text-status-critical",
+                  !isRecheckPending &&
+                    displayResult === "out" &&
+                    "text-status-out",
+                  !isRecheckPending && !displayResult && "text-gray-800"
                 )}
               >
                 {inputValue || "--"}
               </span>
               <span className="text-xl font-medium text-gray-400 mb-1">mm</span>
             </div>
-            {displayDeviation !== undefined && (
+            {displayDeviation !== undefined && !isRecheckPending && (
               <div className="text-right">
                 <div className="text-xs text-gray-400">偏差值</div>
                 <div
@@ -447,7 +627,16 @@ export default function MeasurePage() {
             )}
           </div>
 
-          {displayResult && (
+          {isRecheckPending && (
+            <div className="mt-4 p-3 rounded-xl bg-orange-50 border border-accent-orange/20 flex items-center gap-2 animate-slideUp">
+              <RefreshCw className="w-5 h-5 text-accent-orange shrink-0 animate-spin" />
+              <div className="text-sm font-medium text-orange-800">
+                此点正处于待复测状态，请输入新的测量读数后点"确认读数"
+              </div>
+            </div>
+          )}
+
+          {displayResult && !isRecheckPending && (
             <div
               className={cn(
                 "mt-4 p-3 rounded-xl flex items-center gap-2 animate-slideUp",
@@ -504,8 +693,8 @@ export default function MeasurePage() {
           <div className="grid grid-cols-4 gap-2">
             {tempPhotos.map((photo, idx) => (
               <div
-                key={idx}
-                className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 group"
+                key={`temp-${idx}`}
+                className="relative aspect-square rounded-xl overflow-hidden bg-gray-100 ring-2 ring-accent-orange/40"
               >
                 <img
                   src={photo}
@@ -513,9 +702,12 @@ export default function MeasurePage() {
                   className="w-full h-full object-cover cursor-pointer"
                   onClick={() => setShowPhotoPreview(photo)}
                 />
+                <div className="absolute top-0 left-0 right-0 bg-accent-orange/90 text-white text-[10px] py-0.5 text-center">
+                  待保存
+                </div>
                 <button
                   onClick={() => removeTempPhoto(idx)}
-                  className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center"
+                  className="absolute top-5 right-1 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -532,7 +724,7 @@ export default function MeasurePage() {
                   className="w-full h-full object-cover cursor-pointer"
                   onClick={() => setShowPhotoPreview(photo)}
                 />
-                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/50 to-transparent p-1">
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-1">
                   <div className="text-[10px] text-white text-center">已存</div>
                 </div>
               </div>
@@ -585,9 +777,14 @@ export default function MeasurePage() {
           <button
             onClick={handleConfirm}
             disabled={inputValue === "" || inputValue === "-"}
-            className="h-11 rounded-xl col-span-2 bg-primary-800 text-white font-semibold text-base active:bg-primary-900 disabled:opacity-40"
+            className={cn(
+              "h-11 rounded-xl col-span-2 text-white font-semibold text-base active:opacity-90 disabled:opacity-40",
+              isRecheckPending
+                ? "bg-accent-orange active:bg-orange-600"
+                : "bg-primary-800 active:bg-primary-900"
+            )}
           >
-            确认读数
+            {isRecheckPending ? "确认复测读数" : "确认读数"}
           </button>
         </div>
 
@@ -602,16 +799,7 @@ export default function MeasurePage() {
             上一点
           </button>
           <button
-            onClick={() => {
-              setInputValue("");
-              setTempPhotos([]);
-              if (currentPoint.status !== "pending") {
-                updatePoint(currentPoint.id, {
-                  status: "recheck",
-                  isRechecked: true,
-                });
-              }
-            }}
+            onClick={handleManualRecheck}
             className="btn-orange h-12 px-4 flex items-center justify-center gap-1.5 text-sm"
           >
             <RefreshCw className="w-4 h-4" />
@@ -629,14 +817,16 @@ export default function MeasurePage() {
 
       {/* 复测确认弹窗 */}
       {showRecheckModal && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 animate-fadeIn">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50">
           <div className="w-full max-w-md bg-white rounded-t-3xl p-5 pb-7 animate-slideUp">
             <div className="flex items-start gap-3 mb-4">
               <div className="w-12 h-12 rounded-2xl bg-status-outBg flex items-center justify-center shrink-0">
                 <AlertTriangle className="w-6 h-6 text-status-out" />
               </div>
               <div className="flex-1">
-                <div className="text-lg font-bold text-gray-900">检测到超差</div>
+                <div className="text-lg font-bold text-gray-900">
+                  检测到超差
+                </div>
                 <div className="text-sm text-gray-500 mt-1">
                   当前读数偏差{" "}
                   <span className="text-status-out font-bold">
@@ -646,7 +836,7 @@ export default function MeasurePage() {
                   ，超出允许值 ±{currentPoint.allowableDeviation}mm
                 </div>
                 <div className="text-xs text-gray-400 mt-2">
-                  建议重新测量确认，避免误判
+                  点"重新测量"后此点会回到待复测状态，不计入已完成统计
                 </div>
               </div>
             </div>

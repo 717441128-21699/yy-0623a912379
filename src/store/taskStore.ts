@@ -1,24 +1,104 @@
 import { create } from "zustand";
-import type { MeasureTask, TaskSelection, MeasurePoint, PointResult } from "@/types";
-import { BUILDINGS, UNITS, INSPECTION_STANDARDS, getFloorName } from "@/data/mockData";
-import { generatePoints, updateTaskStats, calculateResult } from "@/utils/measureUtils";
+import type {
+  MeasureTask,
+  TaskSelection,
+  MeasurePoint,
+  PointResult,
+  RectificationStatus,
+} from "@/types";
+import {
+  BUILDINGS,
+  UNITS,
+  INSPECTION_STANDARDS,
+  getFloorName,
+} from "@/data/mockData";
+import {
+  generatePoints,
+  updateTaskStats,
+  calculateResult,
+} from "@/utils/measureUtils";
+
+const STORAGE_KEY = "quality-measure-tasks-v1";
+const SELECTION_KEY = "quality-measure-selection-v1";
+
+function loadTasksFromStorage(): MeasureTask[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as MeasureTask[];
+  } catch {
+    return [];
+  }
+}
+
+function saveTasksToStorage(tasks: MeasureTask[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+  } catch {
+    // storage full etc. ignore silently
+  }
+}
+
+function loadSelectionFromStorage(): TaskSelection | null {
+  try {
+    const raw = localStorage.getItem(SELECTION_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as TaskSelection;
+  } catch {
+    return null;
+  }
+}
+
+function saveSelectionToStorage(selection: TaskSelection) {
+  try {
+    localStorage.setItem(SELECTION_KEY, JSON.stringify(selection));
+  } catch {
+    // ignore
+  }
+}
 
 interface TaskStore {
   tasks: MeasureTask[];
   currentTaskId: string | null;
   selection: TaskSelection;
+
   setSelection: (selection: Partial<TaskSelection>) => void;
   createTask: (inspectorName: string) => MeasureTask;
+  loadTask: (taskId: string) => void;
   getCurrentTask: () => MeasureTask | undefined;
+  getTaskById: (taskId: string) => MeasureTask | undefined;
+
   updatePoint: (pointId: string, updates: Partial<MeasurePoint>) => void;
+
   recordMeasurement: (
     pointId: string,
     measuredValue: number,
     photos?: string[]
   ) => { result: PointResult; deviation: number; deviationPercent: number };
+
+  markPointForRecheck: (pointId: string) => void;
+  recordRecheckMeasurement: (
+    pointId: string,
+    measuredValue: number,
+    photos?: string[]
+  ) => { result: PointResult; deviation: number; deviationPercent: number };
+
+  updateTaskNavigation: (index: number, inspectionFilter: string | null) => void;
+
+  setPointRectification: (
+    pointId: string,
+    status: RectificationStatus,
+    remark?: string,
+    rectifiedValue?: number,
+    rectifiedPhotos?: string[],
+    recheckerName?: string
+  ) => void;
+
   completeTask: () => void;
   assignTeam: (teamId: string, deadline: number, remark?: string) => void;
+
   resetSelection: () => void;
+  clearAllTasks: () => void;
 }
 
 const defaultSelection: TaskSelection = {
@@ -29,17 +109,20 @@ const defaultSelection: TaskSelection = {
 };
 
 export const useTaskStore = create<TaskStore>((set, get) => ({
-  tasks: [],
+  tasks: loadTasksFromStorage(),
   currentTaskId: null,
-  selection: defaultSelection,
+  selection: loadSelectionFromStorage() ?? defaultSelection,
 
-  setSelection: (partial) =>
-    set((state) => ({
-      selection: { ...state.selection, ...partial },
-    })),
+  setSelection: (partial) => {
+    set((state) => {
+      const next = { ...state.selection, ...partial };
+      saveSelectionToStorage(next);
+      return { selection: next };
+    });
+  },
 
   createTask: (inspectorName) => {
-    const { selection } = get();
+    const { selection, tasks } = get();
     const building = BUILDINGS.find((b) => b.id === selection.buildingId)!;
     const unit = UNITS.find((u) => u.id === selection.unitId)!;
     const selectedInspections = INSPECTION_STANDARDS.filter((s) =>
@@ -64,18 +147,31 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       qualifiedPoints: 0,
       criticalPoints: 0,
       outPoints: 0,
+      recheckPendingPoints: 0,
       passRate: 0,
       status: "pending",
       startTime: Date.now(),
       inspectorName,
+      currentPointIndex: 0,
+      currentInspectionFilter: null,
     };
 
-    set((state) => ({
-      tasks: [...state.tasks, task],
+    const nextTasks = [...tasks, task];
+    saveTasksToStorage(nextTasks);
+
+    set({
+      tasks: nextTasks,
       currentTaskId: task.id,
-    }));
+    });
 
     return task;
+  },
+
+  loadTask: (taskId) => {
+    const { tasks } = get();
+    if (tasks.some((t) => t.id === taskId)) {
+      set({ currentTaskId: taskId });
+    }
   },
 
   getCurrentTask: () => {
@@ -83,7 +179,11 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     return tasks.find((t) => t.id === currentTaskId);
   },
 
-  updatePoint: (pointId, updates) =>
+  getTaskById: (taskId) => {
+    return get().tasks.find((t) => t.id === taskId);
+  },
+
+  updatePoint: (pointId, updates) => {
     set((state) => {
       const task = state.tasks.find((t) => t.id === state.currentTaskId);
       if (!task) return state;
@@ -92,17 +192,22 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         p.id === pointId ? { ...p, ...updates } : p
       );
       const newTask = updateTaskStats({ ...task, points: newPoints });
+      const nextTasks = state.tasks.map((t) =>
+        t.id === task.id ? newTask : t
+      );
+      saveTasksToStorage(nextTasks);
 
-      return {
-        tasks: state.tasks.map((t) => (t.id === task.id ? newTask : t)),
-      };
-    }),
+      return { tasks: nextTasks };
+    });
+  },
 
   recordMeasurement: (pointId, measuredValue, photos = []) => {
     const { getCurrentTask, updatePoint } = get();
     const task = getCurrentTask()!;
     const point = task.points.find((p) => p.id === pointId)!;
-    const inspection = INSPECTION_STANDARDS.find((s) => s.id === point.inspectionId)!;
+    const inspection = INSPECTION_STANDARDS.find(
+      (s) => s.id === point.inspectionId
+    )!;
 
     const { deviation, deviationPercent, result } = calculateResult(
       measuredValue,
@@ -111,6 +216,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       inspection.criticalRatio
     );
 
+    const isProblem = result === "out" || result === "critical";
     updatePoint(pointId, {
       measuredValue,
       deviation,
@@ -118,12 +224,109 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       result,
       status: "measured",
       photos: [...point.photos, ...photos],
+      rectificationStatus: isProblem
+        ? point.rectificationStatus === "none"
+          ? "pending"
+          : point.rectificationStatus
+        : "none",
     });
 
     return { result, deviation, deviationPercent };
   },
 
-  completeTask: () =>
+  markPointForRecheck: (pointId) => {
+    const { getCurrentTask } = get();
+    const task = getCurrentTask()!;
+    const point = task.points.find((p) => p.id === pointId)!;
+
+    get().updatePoint(pointId, {
+      status: "recheck_pending",
+      measuredValue: undefined,
+      deviation: undefined,
+      deviationPercent: undefined,
+      result: undefined,
+      isRechecked: true,
+      recheckCount: point.recheckCount + 1,
+      rectificationStatus:
+        point.rectificationStatus === "none" ? "none" : point.rectificationStatus,
+    });
+  },
+
+  recordRecheckMeasurement: (pointId, measuredValue, photos = []) => {
+    const { getCurrentTask, updatePoint } = get();
+    const task = getCurrentTask()!;
+    const point = task.points.find((p) => p.id === pointId)!;
+    const inspection = INSPECTION_STANDARDS.find(
+      (s) => s.id === point.inspectionId
+    )!;
+
+    const { deviation, deviationPercent, result } = calculateResult(
+      measuredValue,
+      point.standardValue,
+      point.allowableDeviation,
+      inspection.criticalRatio
+    );
+
+    const isProblem = result === "out" || result === "critical";
+    updatePoint(pointId, {
+      measuredValue,
+      deviation,
+      deviationPercent,
+      result,
+      status: "recheck_done",
+      isRechecked: true,
+      photos: [...point.photos, ...photos],
+      rectificationStatus: isProblem
+        ? point.rectificationStatus === "none"
+          ? "pending"
+          : point.rectificationStatus
+        : "none",
+    });
+
+    return { result, deviation, deviationPercent };
+  },
+
+  updateTaskNavigation: (index, inspectionFilter) => {
+    set((state) => {
+      const task = state.tasks.find((t) => t.id === state.currentTaskId);
+      if (!task) return state;
+      const newTask = {
+        ...task,
+        currentPointIndex: index,
+        currentInspectionFilter: inspectionFilter,
+      };
+      const nextTasks = state.tasks.map((t) =>
+        t.id === task.id ? newTask : t
+      );
+      saveTasksToStorage(nextTasks);
+      return { tasks: nextTasks };
+    });
+  },
+
+  setPointRectification: (
+    pointId,
+    status,
+    remark,
+    rectifiedValue,
+    rectifiedPhotos = [],
+    recheckerName
+  ) => {
+    const { getCurrentTask } = get();
+    const task = getCurrentTask()!;
+    const point = task.points.find((p) => p.id === pointId)!;
+
+    get().updatePoint(pointId, {
+      rectificationStatus: status,
+      rectificationRemark: remark ?? point.rectificationRemark,
+      rectifiedValue: rectifiedValue ?? point.rectifiedValue,
+      rectifiedPhotos: [...point.rectifiedPhotos, ...rectifiedPhotos],
+      rectifiedAt:
+        status !== "pending" && status !== "none" ? Date.now() : point.rectifiedAt,
+      recheckerName: recheckerName ?? point.recheckerName,
+    });
+  },
+
+  completeTask: () => {
     set((state) => {
       const task = state.tasks.find((t) => t.id === state.currentTaskId);
       if (!task) return state;
@@ -133,27 +336,44 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
         status: "completed",
         endTime: Date.now(),
       });
+      const nextTasks = state.tasks.map((t) =>
+        t.id === task.id ? newTask : t
+      );
+      saveTasksToStorage(nextTasks);
 
-      return {
-        tasks: state.tasks.map((t) => (t.id === task.id ? newTask : t)),
-      };
-    }),
+      return { tasks: nextTasks };
+    });
+  },
 
-  assignTeam: (teamId, deadline, remark) =>
+  assignTeam: (teamId, deadline, remark) => {
     set((state) => {
       const task = state.tasks.find((t) => t.id === state.currentTaskId);
       if (!task) return state;
 
-      return {
-        tasks: state.tasks.map((t) =>
-          t.id === task.id ? { ...t, teamId, deadline, remark } : t
-        ),
+      const withAssignment = {
+        ...task,
+        teamId,
+        deadline,
+        remark,
       };
-    }),
+      const nextTasks = state.tasks.map((t) =>
+        t.id === task.id ? withAssignment : t
+      );
+      saveTasksToStorage(nextTasks);
+      return { tasks: nextTasks };
+    });
+  },
 
-  resetSelection: () =>
+  resetSelection: () => {
+    saveSelectionToStorage(defaultSelection);
     set({
       selection: defaultSelection,
       currentTaskId: null,
-    }),
+    });
+  },
+
+  clearAllTasks: () => {
+    saveTasksToStorage([]);
+    set({ tasks: [], currentTaskId: null });
+  },
 }));

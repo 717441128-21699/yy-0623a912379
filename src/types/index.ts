@@ -36,7 +36,14 @@ export interface InspectionStandard {
 }
 
 export type PointResult = "qualified" | "critical" | "out";
-export type PointStatus = "pending" | "measured" | "recheck";
+export type PointStatus = "pending" | "measured" | "recheck_pending" | "recheck_done";
+
+export type RectificationStatus =
+  | "none"
+  | "pending"
+  | "fixed"
+  | "recheck_pass"
+  | "recheck_fail";
 
 export interface MeasurePoint {
   id: string;
@@ -56,6 +63,13 @@ export interface MeasurePoint {
   photos: string[];
   remark?: string;
   isRechecked?: boolean;
+  recheckCount: number;
+  rectificationStatus: RectificationStatus;
+  rectificationRemark?: string;
+  rectifiedValue?: number;
+  rectifiedAt?: number;
+  rectifiedPhotos: string[];
+  recheckerName?: string;
 }
 
 export type TaskStatus = "pending" | "in_progress" | "completed";
@@ -76,6 +90,7 @@ export interface MeasureTask {
   qualifiedPoints: number;
   criticalPoints: number;
   outPoints: number;
+  recheckPendingPoints: number;
   passRate: number;
   status: TaskStatus;
   startTime: number;
@@ -84,6 +99,8 @@ export interface MeasureTask {
   teamId?: string;
   deadline?: number;
   remark?: string;
+  currentPointIndex: number;
+  currentInspectionFilter: string | null;
 }
 
 export interface Team {
