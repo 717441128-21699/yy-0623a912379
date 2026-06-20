@@ -5,6 +5,7 @@ import type {
   MeasurePoint,
   PointResult,
   RectificationStatus,
+  RectificationRecord,
 } from "@/types";
 import {
   BUILDINGS,
@@ -69,6 +70,8 @@ interface TaskStore {
   getTaskById: (taskId: string) => MeasureTask | undefined;
 
   updatePoint: (pointId: string, updates: Partial<MeasurePoint>) => void;
+  updatePointDraft: (pointId: string, draftValue?: string, draftPhotos?: string[]) => void;
+  clearPointDraft: (pointId: string) => void;
 
   recordMeasurement: (
     pointId: string,
@@ -86,6 +89,17 @@ interface TaskStore {
   updateTaskNavigation: (index: number, inspectionFilter: string | null) => void;
 
   setPointRectification: (
+    pointId: string,
+    status: RectificationStatus,
+    remark?: string,
+    rectifiedValue?: number,
+    rectifiedPhotos?: string[],
+    recheckerName?: string,
+    recheckRemark?: string,
+    recheckPhotos?: string[]
+  ) => void;
+
+  addRectificationRecord: (
     pointId: string,
     status: RectificationStatus,
     remark?: string,
@@ -201,6 +215,46 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     });
   },
 
+  updatePointDraft: (pointId, draftValue, draftPhotos) => {
+    set((state) => {
+      const task = state.tasks.find((t) => t.id === state.currentTaskId);
+      if (!task) return state;
+
+      const newPoints = task.points.map((p) =>
+        p.id === pointId
+          ? {
+              ...p,
+              draftValue: draftValue !== undefined ? draftValue : p.draftValue,
+              draftPhotos: draftPhotos !== undefined ? draftPhotos : p.draftPhotos,
+            }
+          : p
+      );
+      const nextTasks = state.tasks.map((t) =>
+        t.id === task.id ? { ...task, points: newPoints } : t
+      );
+      saveTasksToStorage(nextTasks);
+      return { tasks: nextTasks };
+    });
+  },
+
+  clearPointDraft: (pointId) => {
+    set((state) => {
+      const task = state.tasks.find((t) => t.id === state.currentTaskId);
+      if (!task) return state;
+
+      const newPoints = task.points.map((p) =>
+        p.id === pointId
+          ? { ...p, draftValue: undefined, draftPhotos: [] }
+          : p
+      );
+      const nextTasks = state.tasks.map((t) =>
+        t.id === task.id ? { ...task, points: newPoints } : t
+      );
+      saveTasksToStorage(nextTasks);
+      return { tasks: nextTasks };
+    });
+  },
+
   recordMeasurement: (pointId, measuredValue, photos = []) => {
     const { getCurrentTask, updatePoint } = get();
     const task = getCurrentTask()!;
@@ -309,11 +363,15 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     remark,
     rectifiedValue,
     rectifiedPhotos = [],
-    recheckerName
+    recheckerName,
+    recheckRemark,
+    recheckPhotos = []
   ) => {
     const { getCurrentTask } = get();
     const task = getCurrentTask()!;
     const point = task.points.find((p) => p.id === pointId)!;
+
+    const isRecheckComplete = status === "recheck_pass" || status === "recheck_fail";
 
     get().updatePoint(pointId, {
       rectificationStatus: status,
@@ -323,6 +381,52 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       rectifiedAt:
         status !== "pending" && status !== "none" ? Date.now() : point.rectifiedAt,
       recheckerName: recheckerName ?? point.recheckerName,
+      recheckRemark: isRecheckComplete
+        ? recheckRemark ?? point.recheckRemark
+        : point.recheckRemark,
+      recheckPhotos: isRecheckComplete
+        ? [...point.recheckPhotos, ...recheckPhotos]
+        : point.recheckPhotos,
+      recheckedAt: isRecheckComplete ? Date.now() : point.recheckedAt,
+    });
+  },
+
+  addRectificationRecord: (
+    pointId,
+    status,
+    remark,
+    rectifiedValue,
+    rectifiedPhotos = [],
+    recheckerName
+  ) => {
+    const { getCurrentTask, updatePoint } = get();
+    const task = getCurrentTask()!;
+    const point = task.points.find((p) => p.id === pointId)!;
+
+    const historyRecord: RectificationRecord = {
+      id: `rect-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      status: point.rectificationStatus,
+      rectifiedValue: point.rectifiedValue,
+      rectifiedAt: point.rectifiedAt ?? Date.now(),
+      rectificationRemark: point.rectificationRemark,
+      rectifiedPhotos: [...point.rectifiedPhotos],
+      recheckerName: point.recheckerName,
+      recheckRemark: point.recheckRemark,
+      recheckPhotos: [...point.recheckPhotos],
+      recheckedAt: point.recheckedAt,
+    };
+
+    updatePoint(pointId, {
+      rectificationStatus: status,
+      rectificationRemark: remark,
+      rectifiedValue,
+      rectifiedPhotos,
+      rectifiedAt: Date.now(),
+      recheckerName,
+      recheckRemark: undefined,
+      recheckPhotos: [],
+      recheckedAt: undefined,
+      rectificationHistory: [...point.rectificationHistory, historyRecord],
     });
   },
 

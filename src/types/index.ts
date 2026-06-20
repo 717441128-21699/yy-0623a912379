@@ -45,6 +45,19 @@ export type RectificationStatus =
   | "recheck_pass"
   | "recheck_fail";
 
+export interface RectificationRecord {
+  id: string;
+  status: RectificationStatus;
+  rectifiedValue?: number;
+  rectifiedAt: number;
+  rectificationRemark?: string;
+  rectifiedPhotos: string[];
+  recheckerName?: string;
+  recheckRemark?: string;
+  recheckPhotos: string[];
+  recheckedAt?: number;
+}
+
 export interface MeasurePoint {
   id: string;
   inspectionId: string;
@@ -70,6 +83,12 @@ export interface MeasurePoint {
   rectifiedAt?: number;
   rectifiedPhotos: string[];
   recheckerName?: string;
+  recheckRemark?: string;
+  recheckPhotos: string[];
+  recheckedAt?: number;
+  rectificationHistory: RectificationRecord[];
+  draftValue?: string;
+  draftPhotos: string[];
 }
 
 export type TaskStatus = "pending" | "in_progress" | "completed";

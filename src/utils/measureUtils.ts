@@ -75,6 +75,9 @@ export function generatePoints(
           recheckCount: 0,
           rectificationStatus: "none",
           rectifiedPhotos: [],
+          recheckPhotos: [],
+          rectificationHistory: [],
+          draftPhotos: [],
         });
       }
     }

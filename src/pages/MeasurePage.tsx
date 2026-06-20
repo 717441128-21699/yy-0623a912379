@@ -17,6 +17,7 @@ import {
   Image as ImageIcon,
   Pause,
   Save,
+  FileEdit,
 } from "lucide-react";
 import { useTaskStore } from "@/store/taskStore";
 import {
@@ -37,6 +38,8 @@ export default function MeasurePage() {
     getTaskById,
     loadTask,
     updatePoint,
+    updatePointDraft,
+    clearPointDraft,
     recordMeasurement,
     markPointForRecheck,
     recordRecheckMeasurement,
@@ -85,15 +88,21 @@ export default function MeasurePage() {
   useEffect(() => {
     if (!task || !initialized) return;
     if (currentPoint) {
-      if (currentPoint.status === "recheck_pending") {
+      if (currentPoint.draftValue !== undefined && currentPoint.draftValue !== "") {
+        setInputValue(currentPoint.draftValue);
+      } else if (currentPoint.status === "recheck_pending") {
         setInputValue("");
       } else if (currentPoint.measuredValue !== undefined) {
         setInputValue(String(currentPoint.measuredValue));
       } else {
         setInputValue("");
       }
+      if (currentPoint.draftPhotos.length > 0) {
+        setTempPhotos(currentPoint.draftPhotos);
+      } else {
+        setTempPhotos([]);
+      }
     }
-    setTempPhotos([]);
   }, [currentIndex, selectedInspectionFilter, task?.id, initialized]);
 
   const filteredPoints = useMemo(() => {
@@ -142,6 +151,26 @@ export default function MeasurePage() {
     return Array.from(map.values());
   }, [task]);
 
+  const hasDraft = useMemo(() => {
+    if (!currentPoint) return false;
+    return (
+      (currentPoint.draftValue !== undefined && currentPoint.draftValue !== "") ||
+      currentPoint.draftPhotos.length > 0
+    );
+  }, [currentPoint]);
+
+  useEffect(() => {
+    if (!currentPoint || !initialized) return;
+    const draftVal = inputValue !== "" ? inputValue : undefined;
+    const hasDraftContent = draftVal !== undefined || tempPhotos.length > 0;
+    const existingDraft =
+      currentPoint.draftValue !== undefined || currentPoint.draftPhotos.length > 0;
+
+    if (hasDraftContent || existingDraft) {
+      updatePointDraft(currentPoint.id, draftVal, tempPhotos);
+    }
+  }, [inputValue, tempPhotos, currentPoint?.id, initialized, updatePointDraft, currentPoint?.draftValue, currentPoint?.draftPhotos.length]);
+
   const handleNumberInput = (num: string) => {
     if (num === "del") {
       setInputValue((v) => v.slice(0, -1));
@@ -166,6 +195,8 @@ export default function MeasurePage() {
     if (!currentPoint || inputValue === "" || inputValue === "-") return;
     const value = parseFloat(inputValue);
     if (isNaN(value)) return;
+
+    clearPointDraft(currentPoint.id);
 
     let resultInfo;
     if (currentPoint.status === "recheck_pending") {
@@ -302,6 +333,11 @@ export default function MeasurePage() {
   const isRecheckPending = currentPoint.status === "recheck_pending";
 
   const getPointColor = (p: (typeof filteredPoints)[number]) => {
+    const hasDraft =
+      (p.draftValue !== undefined && p.draftValue !== "") ||
+      p.draftPhotos.length > 0;
+    if (hasDraft && p.status !== "recheck_pending" && p.result === undefined)
+      return "bg-yellow-100 text-yellow-700 ring-2 ring-yellow-400";
     if (p.status === "recheck_pending") return "bg-accent-orange text-white";
     if (p.result === "out") return "bg-status-outBg text-status-out";
     if (p.result === "critical") return "bg-status-criticalBg text-status-critical";
@@ -355,6 +391,16 @@ export default function MeasurePage() {
             </span>
           </div>
         </div>
+
+        {/* 草稿提示条 */}
+        {hasDraft && (
+          <div className="mx-4 mb-2 px-3 py-2 rounded-xl bg-yellow-50 border border-yellow-200 flex items-center gap-2 animate-slideUp">
+            <FileEdit className="w-4 h-4 text-yellow-600 shrink-0" />
+            <div className="flex-1 text-xs text-yellow-700">
+              当前点有未确认的内容，刷新后可继续编辑，点"确认读数"后正式计入统计
+            </div>
+          </div>
+        )}
 
         {/* 检查项切换标签 */}
         <div className="px-3 pb-3 flex gap-2 overflow-x-auto">
@@ -520,6 +566,10 @@ export default function MeasurePage() {
             <span>同检查项测点分布（点击跳转）</span>
             <span className="flex items-center gap-2 text-[10px]">
               <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-yellow-300" />
+                草稿
+              </span>
+              <span className="flex items-center gap-1">
                 <span className="w-2 h-2 rounded-full bg-gray-300" />
                 待测
               </span>
@@ -552,6 +602,12 @@ export default function MeasurePage() {
                 {p.status === "recheck_pending" && idx !== currentIndex && (
                   <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-white border border-accent-orange" />
                 )}
+                {((p.draftValue !== undefined && p.draftValue !== "") || p.draftPhotos.length > 0) &&
+                  p.status !== "recheck_pending" &&
+                  p.result === undefined &&
+                  idx !== currentIndex && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-yellow-400 border border-yellow-600" />
+                  )}
               </button>
             ))}
           </div>

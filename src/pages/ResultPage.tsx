@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
 import {
   ArrowLeft,
@@ -28,6 +28,9 @@ import {
   RotateCcw,
   Pause,
   Eye,
+  Image as ImageIcon,
+  History,
+  Layers,
 } from "lucide-react";
 import {
   PieChart as RePieChart,
@@ -52,7 +55,7 @@ import {
 } from "@/utils/measureUtils";
 import { INSPECTION_STANDARDS, TEAMS } from "@/data/mockData";
 import { cn } from "@/lib/utils";
-import type { RectificationStatus } from "@/types";
+import type { RectificationStatus, MeasurePoint } from "@/types";
 
 type FilterStatus = "all" | "pending" | "fixed" | "recheck_pass" | "recheck_fail";
 
@@ -65,6 +68,7 @@ export default function ResultPage() {
     loadTask,
     assignTeam,
     setPointRectification,
+    addRectificationRecord,
   } = useTaskStore();
   const [expandedRooms, setExpandedRooms] = useState<Set<string>>(new Set());
   const [selectedTeamId, setSelectedTeamId] = useState("");
@@ -81,9 +85,15 @@ export default function ResultPage() {
     remark: string;
     rectifiedValue: string;
     recheckerName: string;
+    recheckRemark: string;
+    recheckPhotos: string[];
+    rectifiedPhotos: string[];
   } | null>(null);
   const [filterStatus, setFilterStatus] = useState<FilterStatus>("all");
   const [showRoomView, setShowRoomView] = useState(true);
+  const [deliveryViewMode, setDeliveryViewMode] = useState<"room" | "team">("room");
+  const recheckFileInputRef = useRef<HTMLInputElement>(null);
+  const rectFileInputRef = useRef<HTMLInputElement>(null);
 
   const taskFromStore = getCurrentTask();
   const task = taskFromStore ?? getTaskById(taskId ?? "");
@@ -169,14 +179,19 @@ export default function ResultPage() {
     pointId: string,
     currentStatus: RectificationStatus,
     currentRemark?: string,
-    currentRectified?: number
+    currentRectified?: number,
+    currentRecheckRemark?: string
   ) => {
+    const point = task?.points.find((p) => p.id === pointId);
     setRectificationModal({
       pointId,
       status: currentStatus === "none" ? "pending" : currentStatus,
       remark: currentRemark ?? "",
       rectifiedValue: currentRectified !== undefined ? String(currentRectified) : "",
       recheckerName: task?.inspectorName ?? "",
+      recheckRemark: currentRecheckRemark ?? "",
+      recheckPhotos: [],
+      rectifiedPhotos: [],
     });
   };
 
@@ -186,15 +201,89 @@ export default function ResultPage() {
       rectificationModal.rectifiedValue !== ""
         ? parseFloat(rectificationModal.rectifiedValue)
         : undefined;
-    setPointRectification(
-      rectificationModal.pointId,
-      rectificationModal.status,
-      rectificationModal.remark || undefined,
-      val,
-      [],
-      rectificationModal.recheckerName || undefined
-    );
+
+    if (rectificationModal.status === "recheck_fail") {
+      addRectificationRecord(
+        rectificationModal.pointId,
+        "pending",
+        rectificationModal.remark || undefined,
+        val,
+        rectificationModal.rectifiedPhotos,
+        rectificationModal.recheckerName || undefined
+      );
+    } else {
+      setPointRectification(
+        rectificationModal.pointId,
+        rectificationModal.status,
+        rectificationModal.remark || undefined,
+        val,
+        rectificationModal.rectifiedPhotos,
+        rectificationModal.recheckerName || undefined,
+        rectificationModal.recheckRemark || undefined,
+        rectificationModal.recheckPhotos
+      );
+    }
     setRectificationModal(null);
+  };
+
+  const handleRectPhotoCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !rectificationModal) return;
+    Array.from(files).forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        setRectificationModal((prev) =>
+          prev
+            ? { ...prev, rectifiedPhotos: [...prev.rectifiedPhotos, dataUrl] }
+            : null
+        );
+      };
+      reader.readAsDataURL(file);
+    });
+    e.target.value = "";
+  };
+
+  const handleRecheckPhotoCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !rectificationModal) return;
+    Array.from(files).forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        setRectificationModal((prev) =>
+          prev
+            ? { ...prev, recheckPhotos: [...prev.recheckPhotos, dataUrl] }
+            : null
+        );
+      };
+      reader.readAsDataURL(file);
+    });
+    e.target.value = "";
+  };
+
+  const removeRectPhoto = (idx: number) => {
+    if (!rectificationModal) return;
+    setRectificationModal((prev) =>
+      prev
+        ? {
+            ...prev,
+            rectifiedPhotos: prev.rectifiedPhotos.filter((_, i) => i !== idx),
+          }
+        : null
+    );
+  };
+
+  const removeRecheckPhoto = (idx: number) => {
+    if (!rectificationModal) return;
+    setRectificationModal((prev) =>
+      prev
+        ? {
+            ...prev,
+            recheckPhotos: prev.recheckPhotos.filter((_, i) => i !== idx),
+          }
+        : null
+    );
   };
 
   const handleAssign = () => {
@@ -216,6 +305,33 @@ export default function ResultPage() {
     if (task) navigate(`/measure/${task.id}`);
   };
 
+  const teamStats = useMemo(() => {
+    if (!task || !task.teamId) return [];
+    const team = TEAMS.find((t) => t.id === task.teamId);
+    if (!team) return [];
+
+    const isCounted = (p: MeasurePoint) =>
+      p.status === "measured" || p.status === "recheck_done";
+    const problems = task.points.filter(
+      (p) => isCounted(p) && (p.result === "out" || p.result === "critical")
+    );
+
+    return [
+      {
+        teamId: team.id,
+        teamName: team.name,
+        leader: team.leader,
+        phone: team.phone,
+        total: problems.length,
+        pending: problems.filter((p) => p.rectificationStatus === "pending").length,
+        fixed: problems.filter((p) => p.rectificationStatus === "fixed").length,
+        recheckPass: problems.filter((p) => p.rectificationStatus === "recheck_pass").length,
+        recheckFail: problems.filter((p) => p.rectificationStatus === "recheck_fail").length,
+        problemPoints: problems,
+      },
+    ];
+  }, [task]);
+
   const handleShare = () => {
     if (!task) return;
     const team = TEAMS.find((t) => t.id === task.teamId);
@@ -233,8 +349,35 @@ export default function ResultPage() {
       (p) => p.rectificationStatus === "recheck_fail"
     ).length;
 
+    const byRoom = new Map<string, typeof problems>();
+    for (const p of problems) {
+      if (!byRoom.has(p.roomName)) byRoom.set(p.roomName, []);
+      byRoom.get(p.roomName)!.push(p);
+    }
+
+    let problemList = "";
+    let idx = 1;
+    for (const [roomName, roomProblems] of byRoom.entries()) {
+      problemList += `\n【${roomName}】${roomProblems.length}项\n`;
+      for (const p of roomProblems) {
+        const rectLabel = getRectificationLabel(p.rectificationStatus);
+        const recheckConclusion = p.recheckRemark
+          ? `，复查结论：${p.recheckRemark}`
+          : p.rectificationStatus === "recheck_pass"
+          ? "，复查结论：合格"
+          : p.rectificationStatus === "recheck_fail"
+          ? "，复查结论：仍超差，需重新整改"
+          : "";
+        const rectValue = p.rectifiedValue ? `，整改后${p.rectifiedValue}mm` : "";
+        problemList += `  ${idx}. ${p.inspectionName} · ${p.location} · 初测${p.measuredValue}mm(偏${(p.deviation ?? 0) > 0 ? "+" : ""}${(p.deviation ?? 0).toFixed(1)}mm) · ${rectLabel}${rectValue}${recheckConclusion}\n`;
+        idx++;
+      }
+    }
+
     const text = `【实测实量整改通知单】
+━━━━━━━━━━━━━━━━━━━━━━━
 测区：${task.buildingName} ${task.floorName} ${task.unitName}
+户型：${task.unitType}
 测量人：${task.inspectorName}
 时间：${formatDate(task.startTime)}
 合格率：${task.passRate}%
@@ -244,8 +387,15 @@ export default function ResultPage() {
   超差：${task.outPoints}点
 ${team ? `责任班组：${team.name}（${team.leader} ${team.phone}）` : ""}
 ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()}` : ""}
-整改状态：待整改${pendingCount} · 已整改待复查${fixedCount} · 复查合格${passCount} · 仍超差${failCount}
-问题数量：${problems.length}项
+━━━━━━━━━━━━━━━━━━━━━━━
+【整改状态汇总】
+待整改：${pendingCount}项
+已整改待复查：${fixedCount}项
+复查合格：${passCount}项
+仍超差：${failCount}项
+━━━━━━━━━━━━━━━━━━━━━━━
+【问题清单】${problemList}
+━━━━━━━━━━━━━━━━━━━━━━━
 请按清单完成整改并回复！`;
 
     if (navigator.share) {
@@ -392,6 +542,162 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
             </div>
           </div>
         </div>
+
+        {/* 交付视角切换 */}
+        {assignedTeam && (
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Layers className="w-5 h-5 text-accent-orange" />
+                <span className="font-medium text-gray-800">班组交付视角</span>
+              </div>
+              <div className="flex bg-gray-100 rounded-lg p-0.5">
+                <button
+                  onClick={() => setDeliveryViewMode("room")}
+                  className={cn(
+                    "px-3 py-1 rounded-md text-xs font-semibold transition-all",
+                    deliveryViewMode === "room"
+                      ? "bg-white text-primary-700 shadow-sm"
+                      : "text-gray-500"
+                  )}
+                >
+                  按房间
+                </button>
+                <button
+                  onClick={() => setDeliveryViewMode("team")}
+                  className={cn(
+                    "px-3 py-1 rounded-md text-xs font-semibold transition-all",
+                    deliveryViewMode === "team"
+                      ? "bg-white text-accent-orange shadow-sm"
+                      : "text-gray-500"
+                  )}
+                >
+                  按班组
+                </button>
+              </div>
+            </div>
+
+            {deliveryViewMode === "room" ? (
+              <div className="space-y-2">
+                {roomStats.map((r) => {
+                  const roomProblems = allProblems.filter(
+                    (p) => p.roomName === r.roomName
+                  );
+                  const pending = roomProblems.filter(
+                    (p) => p.rectificationStatus === "pending"
+                  ).length;
+                  const fixed = roomProblems.filter(
+                    (p) => p.rectificationStatus === "fixed"
+                  ).length;
+                  const pass = roomProblems.filter(
+                    (p) => p.rectificationStatus === "recheck_pass"
+                  ).length;
+                  const fail = roomProblems.filter(
+                    (p) => p.rectificationStatus === "recheck_fail"
+                  ).length;
+                  if (roomProblems.length === 0) return null;
+
+                  return (
+                    <button
+                      key={r.roomId}
+                      onClick={() => {
+                        toggleRoom(`problem-${r.roomName}`);
+                        const el = document.getElementById(
+                          `problem-section-${r.roomName}`
+                        );
+                        if (el)
+                          el.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }}
+                      className="w-full p-3 rounded-xl border border-gray-100 bg-white active:bg-gray-50 text-left"
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="font-semibold text-sm text-gray-800">
+                          {r.roomName}
+                        </div>
+                        <div className="text-[10px] text-gray-400">
+                          共{roomProblems.length}项
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {pending > 0 && (
+                          <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-status-outBg text-status-out text-[10px] font-semibold">
+                            待整改{pending}
+                          </span>
+                        )}
+                        {fixed > 0 && (
+                          <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-status-criticalBg text-status-critical text-[10px] font-semibold">
+                            待复查{fixed}
+                          </span>
+                        )}
+                        {pass > 0 && (
+                          <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-status-qualifiedBg text-status-qualified text-[10px] font-semibold">
+                            合格{pass}
+                          </span>
+                        )}
+                        {fail > 0 && (
+                          <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-semibold">
+                            仍超差{fail}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {teamStats.map((ts) => (
+                  <button
+                    key={ts.teamId}
+                    onClick={() => {
+                      setFilterStatus("all");
+                      const el = document.getElementById("problem-list-section");
+                      if (el)
+                        el.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }}
+                    className="w-full p-3 rounded-xl border border-gray-100 bg-white active:bg-gray-50 text-left"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <div className="font-semibold text-sm text-gray-800">
+                          {ts.teamName}
+                        </div>
+                        <div className="text-[10px] text-gray-400">
+                          负责人：{ts.leader} · {ts.phone}
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-gray-400">
+                        共{ts.total}项
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {ts.pending > 0 && (
+                        <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-status-outBg text-status-out text-[10px] font-semibold">
+                          待整改{ts.pending}
+                        </span>
+                      )}
+                      {ts.fixed > 0 && (
+                        <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-status-criticalBg text-status-critical text-[10px] font-semibold">
+                          待复查{ts.fixed}
+                        </span>
+                      )}
+                      {ts.recheckPass > 0 && (
+                        <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-status-qualifiedBg text-status-qualified text-[10px] font-semibold">
+                          合格{ts.recheckPass}
+                        </span>
+                      )}
+                      {ts.recheckFail > 0 && (
+                        <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-semibold">
+                          仍超差{ts.recheckFail}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* 按房间查看完成情况 */}
         <div className="card p-4">
@@ -691,6 +997,7 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
             ))}
           </div>
 
+          <div id="problem-list-section" />
           {allProblems.length === 0 ? (
             <div className="py-10 flex flex-col items-center justify-center text-gray-400">
               <CheckCircle className="w-12 h-12 mb-3 text-status-qualified/30" />
@@ -725,6 +1032,7 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
                   return (
                     <div
                       key={roomName}
+                      id={`problem-section-${roomName}`}
                       className="border border-gray-100 rounded-xl overflow-hidden"
                     >
                       <button
@@ -829,6 +1137,12 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
                                         p.rectificationStatus
                                       )}
                                     </span>
+                                    {p.rectificationHistory.length > 0 && (
+                                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 text-[10px] font-semibold">
+                                        <History className="w-2.5 h-2.5" />
+                                        第{p.rectificationHistory.length + 1}轮
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="flex items-center gap-3 text-xs text-gray-500">
                                     <span className="flex items-center gap-1">
@@ -851,8 +1165,29 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
                                       {(p.deviation ?? 0).toFixed(1)}mm
                                     </span>
                                   </div>
+                                  {p.rectifiedValue !== undefined && (
+                                    <div className="mt-1 text-[11px] text-gray-500">
+                                      <span className="text-gray-400">整改后：</span>
+                                      <span className="font-medium text-gray-700">
+                                        {p.rectifiedValue}mm
+                                      </span>
+                                      {p.recheckerName && (
+                                        <span className="ml-2 text-gray-400">
+                                          复查人：{p.recheckerName}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {p.recheckRemark && (
+                                    <div className="mt-1 text-[11px] text-gray-500 bg-gray-50 px-2 py-1 rounded">
+                                      <span className="text-gray-400">复查结论：</span>
+                                      <span className="text-gray-700">
+                                        {p.recheckRemark}
+                                      </span>
+                                    </div>
+                                  )}
                                   {p.rectificationRemark && (
-                                    <div className="mt-1.5 text-[11px] text-gray-500 bg-gray-50 px-2 py-1 rounded">
+                                    <div className="mt-1 text-[11px] text-gray-500 bg-gray-50 px-2 py-1 rounded">
                                       备注：{p.rectificationRemark}
                                     </div>
                                   )}
@@ -872,6 +1207,34 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
                                       ))}
                                     </div>
                                   )}
+                                  {p.rectificationHistory.length > 0 && (
+                                    <div className="mt-2 pt-2 border-t border-gray-100">
+                                      <div className="text-[10px] text-gray-400 mb-1.5">
+                                        <History className="w-3 h-3 inline mr-1" />
+                                        历史整改记录（共{p.rectificationHistory.length}轮）
+                                      </div>
+                                      <div className="space-y-1">
+                                        {p.rectificationHistory.map((h, hi) => (
+                                          <div key={h.id} className="text-[10px] text-gray-500 bg-gray-50 px-2 py-1.5 rounded">
+                                            <span className="text-gray-400">第{hi + 1}轮：</span>
+                                            <span className="font-medium">
+                                              {getRectificationLabel(h.status)}
+                                            </span>
+                                            {h.rectifiedValue && (
+                                              <span className="ml-1">
+                                                整改{h.rectifiedValue}mm
+                                              </span>
+                                            )}
+                                            {h.recheckRemark && (
+                                              <span className="ml-1">
+                                                （{h.recheckRemark}）
+                                              </span>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                                 <div className="flex flex-col items-end gap-1 shrink-0">
                                   <button
@@ -880,7 +1243,8 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
                                         p.id,
                                         p.rectificationStatus,
                                         p.rectificationRemark,
-                                        p.rectifiedValue
+                                        p.rectifiedValue,
+                                        p.recheckRemark
                                       )
                                     }
                                     className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-primary-50 text-primary-800 text-[11px] font-semibold active:bg-primary-100"
@@ -1282,6 +1646,139 @@ ${task.deadline ? `整改期限：${new Date(task.deadline).toLocaleDateString()
                   className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-primary-600 resize-none placeholder-gray-400"
                 />
               </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs text-gray-500">整改前照片（可选）</label>
+                  <button
+                    onClick={() => rectFileInputRef.current?.click()}
+                    className="flex items-center gap-1 px-2 py-1 rounded bg-primary-50 text-primary-700 text-[11px] font-medium"
+                  >
+                    <Camera className="w-3 h-3" />
+                    添加
+                  </button>
+                  <input
+                    ref={rectFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    capture="environment"
+                    onChange={handleRectPhotoCapture}
+                    className="hidden"
+                  />
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {rectificationModal.rectifiedPhotos.map((photo, idx) => (
+                    <div
+                      key={`rect-${idx}`}
+                      className="relative aspect-square rounded-lg overflow-hidden bg-gray-100"
+                    >
+                      <img
+                        src={photo}
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
+                      <button
+                        onClick={() => removeRectPhoto(idx)}
+                        className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/60 text-white flex items-center justify-center"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {rectificationModal.rectifiedPhotos.length === 0 && (
+                    <div className="col-span-4 py-3 border border-dashed border-gray-200 rounded-lg text-center text-[10px] text-gray-400">
+                      点击右上角添加整改照片
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {(rectificationModal.status === "recheck_pass" ||
+                rectificationModal.status === "recheck_fail") && (
+                <>
+                  <div className="pt-2 border-t border-gray-100">
+                    <div className="text-xs font-medium text-gray-700 mb-2 flex items-center gap-1">
+                      <Eye className="w-3 h-3" />
+                      复查信息
+                    </div>
+                    {rectificationModal.status === "recheck_fail" && (
+                      <div className="mb-2 p-2 rounded-lg bg-status-outBg text-[11px] text-status-out">
+                        选择"仍超差"后，当前记录将归档至历史记录，并生成新的待整改记录
+                      </div>
+                    )}
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1.5">
+                          复查结论
+                        </label>
+                        <textarea
+                          value={rectificationModal.recheckRemark}
+                          onChange={(e) =>
+                            setRectificationModal({
+                              ...rectificationModal,
+                              recheckRemark: e.target.value,
+                            })
+                          }
+                          rows={2}
+                          placeholder={
+                            rectificationModal.status === "recheck_pass"
+                              ? "例如：经复查，打磨后偏差已控制在允许范围内"
+                              : "例如：经复查，偏差仍超出允许范围，需重新整改"
+                          }
+                          className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-primary-600 resize-none placeholder-gray-400"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs text-gray-500">复查照片（可选）</label>
+                          <button
+                            onClick={() => recheckFileInputRef.current?.click()}
+                            className="flex items-center gap-1 px-2 py-1 rounded bg-primary-50 text-primary-700 text-[11px] font-medium"
+                          >
+                            <Camera className="w-3 h-3" />
+                            添加
+                          </button>
+                          <input
+                            ref={recheckFileInputRef}
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            capture="environment"
+                            onChange={handleRecheckPhotoCapture}
+                            className="hidden"
+                          />
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {rectificationModal.recheckPhotos.map((photo, idx) => (
+                            <div
+                              key={`recheck-${idx}`}
+                              className="relative aspect-square rounded-lg overflow-hidden bg-gray-100"
+                            >
+                              <img
+                                src={photo}
+                                alt=""
+                                className="w-full h-full object-cover"
+                              />
+                              <button
+                                onClick={() => removeRecheckPhoto(idx)}
+                                className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/60 text-white flex items-center justify-center"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </div>
+                          ))}
+                          {rectificationModal.recheckPhotos.length === 0 && (
+                            <div className="col-span-4 py-3 border border-dashed border-gray-200 rounded-lg text-center text-[10px] text-gray-400">
+                              点击右上角添加复查照片
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="pt-2 grid grid-cols-2 gap-3">
                 <button
